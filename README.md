@@ -66,8 +66,8 @@ Needs Python 3.10+ and Node for running JavaScript originals. No other dependenc
 ## Example prompts
 
 - *"Lostwax status"*
-- *"Use Lostwax on its bundled example: rebuild the search fixture and prove it matches."*
-- *"Now try the naive rebuild in reconstruction-naive."*
+- *"Use Lostwax on its bundled example: try the naive rebuild in reconstruction-naive first."*
+- *"Now rebuild it properly with the fixed rebuild in reconstruction and prove it matches."*
 - *"Re-check that run, re-running the cases."*
 - *"Use Lostwax to understand /workspace/my-app and rebuild its search in Python, with proof."*
 - *"Study this npm package, write a spec for its date parsing, and show me the parity report."*
@@ -86,7 +86,8 @@ python3 $P/bin/rea-bot engine status                     # optional REA engine
 python3 $P/bin/rea-bot prepare <run> --input build.json
 python3 $P/bin/rea-bot pin /abs/path/to/original         # digest to approve
 python3 $P/bin/rea-bot diff <run> --cases cases.json --reconstruction "python3 rebuild/adapter.py" \
-   --original "node original/adapter.mjs" --original-pin /abs/path/to/original --approve-original <sha256>
+   --original "node original/adapter.mjs" --original-pin original --approve-original <sha256>
+   # relative paths resolve against the current folder before cases run (each case runs in a fresh folder)
 python3 $P/bin/rea-bot parity <run>
 python3 $P/bin/rea-bot recheck <run> --rerun             # routines
 ```
@@ -116,7 +117,7 @@ Runs are saved in `/workspace/rea-bot-runs/<run>/` (set `REA_BOT_HOME` to change
 ## Tests
 
 ```sh
-python3 -m unittest discover -s tests -t .      # 32 tests; engine e2e runs when the engine is staged
+python3 -m unittest discover -s tests -t .      # 34 tests; engine e2e runs when the engine is staged
 ```
 
 See [REVIEWER-TESTING.md](REVIEWER-TESTING.md), [NOTICE.md](NOTICE.md), [CHANGELOG.md](CHANGELOG.md).

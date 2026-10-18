@@ -23,11 +23,11 @@ For `javascript-application`, `electron-asar`, binaries, archives, .NET or wasm,
 - `rea-bot engine status`. If not ready, show the plan from `rea-bot engine setup` (and `rea-bot engine stage-node` when Node is older than 22.19) and ask the user before `--apply`. Setup verifies the pinned rea-agents 6.5.0 tarball (SHA-512) and all 1,651 files; lifecycle scripts stay disabled.
 - `rea-bot engine tools --match javascript --schema` to read real schemas. Never invent a tool or provider.
 - Write a calls file and run `rea-bot engine call <run> --calls calls.json`. Calls in one file share one engine session, so retained evidence references stay valid. Ask for `detail: "summary"` and focused `source_paths` on big bundles; read full results from the saved files, not the chat.
-- JavaScript routes need a real engine `evidence_id` linked in the spec. If the engine truly cannot run here, pass `--engine-waiver "<reason>"`; it is recorded in SPEC.md. Waivers are refused when the engine is ready.
+- JavaScript routes need a real engine `evidence_id` linked in the spec. If the engine truly cannot run here, pass `--engine-waiver "<reason>"` (MCP: `engine_waiver`); it is recorded in SPEC.md. Waivers are refused when the engine is ready.
 - Deep native analysis needs a supported external engine the user already has. Say so plainly if it is missing.
 
 ## 3. Finite spec
-Write `build.json` with `evidence` (id, state, locator, summary), `features` (id, name, interface, behavior, test, state, evidence_ids) and optional ranked `improvements`. States: `observed-static`, `observed-runtime`, `source-derived`, `inferred`, `unknown`. Never upgrade an inference to an observation. Keep the matrix small and testable.
+Write `build.json` with `evidence` (id, state, locator, summary; a locator is a path relative to the target, e.g. `search.mjs:2-6`, or an absolute path such as an engine `result_file`), `features` (id, name, interface, behavior, test, state, evidence_ids) and optional ranked `improvements`. States: `observed-static`, `observed-runtime`, `source-derived`, `inferred`, `unknown`. Never upgrade an inference to an observation. Keep the matrix small and testable.
 `rea-bot prepare <run> --input build.json` validates it, saves a digest-pinned spec and SPEC.md. Every later step reuses that exact spec by digest; do not retype it.
 
 ## 4. Build and test (keep going)
@@ -36,8 +36,8 @@ A build request authorizes analysis, spec, implementation, tests and fixes in th
 ## 5. Prove it
 Adapters: a small script per side that reads one JSON case on stdin and prints JSON on stdout. Cases file: `[{"id", "feature_id", "input"}]`.
 - Differential (real parity): running the original is target execution. Show the user the exact command, what it touches and the pin digest from `rea-bot pin <file or folder>`, and get a yes. Then:
-  `rea-bot diff <run> --cases cases.json --reconstruction "python3 rebuild/adapter.py" --original "node original/adapter.mjs" --original-pin <reviewed file or dir> --approve-original <sha256>`
-  A changed pin is refused. Each case runs in a fresh folder with a minimal environment and a timeout. This is process isolation, not a sandbox: untrusted originals belong in a real sandbox; if none is available, use expected-only mode and say runtime parity is blocked.
+  `rea-bot diff <run> --cases cases.json --reconstruction "python3 rebuild/adapter.py" --original "node original/adapter.mjs" --original-pin original --approve-original <sha256>`
+  Relative paths (`--cases`, `--original-pin` and script paths inside the commands) are resolved against the folder you run `rea-bot` from, before any case runs; the summary records the absolute commands so `recheck --rerun` works from anywhere. With the MCP tools, pass absolute paths. A changed pin is refused. Each case runs in a fresh folder with a minimal environment and a timeout. This is process isolation, not a sandbox: untrusted originals belong in a real sandbox; if none is available, use expected-only mode and say runtime parity is blocked.
 - Expected-only: give each case an `expected` value from source reading and omit `--original`. Rows stay `blocked` for parity: implementation checks are not runtime parity.
 - `rea-bot parity <run>` merges the latest diff (runner-attested, digest-checked) with any `--results` you supply (caller-supplied) and writes PARITY.md. Runner evidence always overrides caller claims.
 - Fix mismatches and re-run until it passes or the remaining gaps are explained.

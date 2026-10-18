@@ -28,7 +28,7 @@ TOOLS = [
     tool('rea_route', 'Classify one target (absolute path, HTTPS repo/site URL, or npm:pkg@version) and return safe first steps. No network, no execution.', {'target': S}, ['target']),
     tool('rea_new_run', 'Create a persistent run folder for one target. Returns run id used by every later step (survives new chats, subagents and routines).', {'target': S, 'run_id': S, 'note': S}, ['target'], False),
     tool('rea_inspect', 'Bounded static inventory of the run target (or another absolute path). Saves inventory.json; returns a preview. Never returns source content.', {'run_id': S, 'target': S}, [], False),
-    tool('rea_prepare', 'Validate an evidence-linked capability matrix and save the digest-pinned specification + SPEC.md. JavaScript routes need real engine evidence or an explicit engine_waiver.',
+    tool('rea_prepare', 'Validate an evidence-linked capability matrix and save the digest-pinned specification + SPEC.md. JavaScript routes need real engine evidence. If the engine truly cannot run here, pass engine_waiver with the reason; it is recorded in SPEC.md. Waivers are refused when the engine is ready.',
          {'run_id': S, 'build': {'type': 'object', 'properties': {'evidence': ARR, 'features': ARR, 'improvements': ARR}, 'required': ['evidence', 'features']}, 'engine_waiver': S}, ['run_id', 'build'], False),
     tool('rea_diff', 'Run reconstruction (and, with a digest-pinned approval, the original) on identical cases; logs and pins every output. Commands are argv lists, never a shell.',
          {'run_id': S, 'cases_file': S, 'reconstruction': {'type': 'array', 'items': S}, 'original': {'type': 'array', 'items': S},

@@ -1,7 +1,7 @@
 {
   "evidence": [
-    {"id": "src-search", "state": "observed-static", "locator": "examples/search-fixture/original/search.mjs:2-6", "summary": "search(items, query): trims query (ECMAScript trim), lowercases, returns [] for empty needle, else items whose lowercase form includes the needle, in order."},
-    {"id": "pkg", "state": "observed-static", "locator": "examples/search-fixture/original/package.json", "summary": "ES module, single export ./search.mjs, MIT."}
+    {"id": "src-search", "state": "observed-static", "locator": "search.mjs:2-6", "summary": "search(items, query): trims query (ECMAScript trim), lowercases, returns [] for empty needle, else items whose lowercase form includes the needle, in order."},
+    {"id": "pkg", "state": "observed-static", "locator": "package.json", "summary": "ES module, single export ./search.mjs, MIT."}
   ],
   "features": [
     {"id": "trim-whitespace", "name": "Query trimming", "interface": "search(items: string[], query: string): string[]", "behavior": "Leading/trailing ECMAScript whitespace and line terminators (incl. BOM, NBSP, U+3000) are ignored.", "test": "cases.json feature trim-whitespace", "state": "observed-static", "evidence_ids": ["src-search"]},

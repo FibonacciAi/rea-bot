@@ -12,7 +12,7 @@ def spec_md(run, spec):
              '- spec_sha256: `' + spec['spec_sha256'] + '`', '']
     waiver = run.meta.get('engine_waiver')
     if waiver:
-        lines += ['> Engine-backed analysis was not available for this route: ' + _esc(waiver), '']
+        lines += ['> Engine waiver (the REA engine could not run here): ' + _esc(waiver), '']
     lines += ['## Capability matrix', '', '| id | name | state | interface | behavior | test | evidence |', '|---|---|---|---|---|---|---|']
     for f in spec['capability_matrix']:
         lines.append('| ' + ' | '.join(_esc(x) for x in [f['id'], f['name'], f['state'], f['interface'], f['behavior'], f['test'], ', '.join(f['evidence_ids'])]) + ' |')

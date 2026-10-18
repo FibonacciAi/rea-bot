@@ -26,7 +26,7 @@ class Flow(TempHome):
         with self.assertRaisesRegex(ValueError, 'engine evidence'):
             api.prepare('gate', str(EXAMPLE / 'build.json'))
         out = api.prepare('gate', str(EXAMPLE / 'build.json'), engine_waiver='no node 22')
-        self.assertIn('no node 22', (store.Run('gate').dir / 'SPEC.md').read_text())
+        self.assertIn('Engine waiver (the REA engine could not run here): no node 22', (store.Run('gate').dir / 'SPEC.md').read_text())
         self.assertEqual(len(out['spec_sha256']), 64)
 
     def test_spec_survives_process_boundary_and_detects_tampering(self):
@@ -65,6 +65,35 @@ class Flow(TempHome):
         self.assertTrue(recheck['log_intact'])
         self.assertFalse(recheck['regressed'])
         self.assertEqual(recheck['current']['matches'], 14)
+
+    @unittest.skipUnless(NODE, 'node required')
+    def test_relative_command_paths_are_resolved_before_cases_run(self):
+        # The skill's example uses relative script paths; each case runs in a fresh folder, so they must be made absolute.
+        import os
+        self.make()
+        old = os.getcwd()
+        os.chdir(EXAMPLE)
+        try:
+            out = api.diff('demo', 'cases.json', 'python3 reconstruction/adapter.py', 'node original/adapter.mjs',
+                           'original', runner.sha256_path('original'))
+        finally:
+            os.chdir(old)
+        self.assertEqual((out['matches'], out['cases']), (14, 14))
+        self.assertTrue(all(r['status'] == 'passed' for r in out['results']))
+        summary = json.loads((store.Run('demo').dir / 'diff').joinpath(sorted(os.listdir(store.Run('demo').dir / 'diff'))[-1], 'summary.json').read_text())
+        self.assertEqual(summary['reconstruction_argv'], ['python3', str((EXAMPLE / 'reconstruction' / 'adapter.py').resolve())])
+        self.assertEqual(summary['original_argv'], ['node', str((EXAMPLE / 'original' / 'adapter.mjs').resolve())])
+        # A re-run from another folder still finds the scripts.
+        recheck = api.recheck('demo', rerun=True)
+        self.assertEqual(recheck['current']['matches'], 14)
+
+    def test_resolve_argv_leaves_programs_options_and_missing_paths_alone(self):
+        (self.root / 'tool.py').write_text('')
+        (self.root / 'sub').mkdir()
+        (self.root / 'sub' / 'a.py').write_text('')
+        out = runner.resolve_argv(['python3', '-u', 'tool.py', 'sub/a.py', 'missing/x.py', 'word', '/abs/x'], base=self.root)
+        self.assertEqual(out, ['python3', '-u', str(self.root / 'tool.py'), str(self.root / 'sub' / 'a.py'), 'missing/x.py', 'word', '/abs/x'])
+        self.assertEqual(runner.resolve_argv(['./sub/a.py'], base=self.root), [str(self.root / 'sub' / 'a.py')])
 
     @unittest.skipUnless(NODE, 'node required')
     def test_original_needs_matching_pinned_approval(self):

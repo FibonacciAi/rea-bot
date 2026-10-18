@@ -62,6 +62,26 @@ def parse_argv(value):
     raise ValueError('Commands must be a nonempty argv list or a shell-quoted string (it is never run through a shell).')
 
 
+def resolve_argv(argv, base=None):
+    """Make relative script paths absolute against the caller's folder.
+
+    Each case runs in a fresh empty folder, so `python3 rebuild/adapter.py` would otherwise point nowhere.
+    A token is rewritten only when it names an existing path under `base` (default: current folder):
+    the program itself only when it contains a slash (so `python3` or `node` stay PATH lookups), other
+    tokens when they are an existing file or contain a slash. Options (leading `-`) are left alone.
+    """
+    base = Path(base or os.getcwd())
+    out = []
+    for i, tok in enumerate(argv):
+        p = Path(tok)
+        if tok and not tok.startswith('-') and not p.is_absolute():
+            cand = base / p
+            if ('/' in tok and cand.exists()) or (i > 0 and cand.is_file()):
+                tok = str(cand.resolve())
+        out.append(tok)
+    return out
+
+
 def load_cases(path):
     cases = json.loads(Path(path).read_text())
     if not isinstance(cases, list) or not cases or len(cases) > 5000:
@@ -114,7 +134,7 @@ def differential(run_id, cases_path, reconstruction, original=None, original_pin
     for c in cases:
         if c.get('feature_id') is not None and c['feature_id'] not in feature_ids:
             raise ValueError('Case ' + str(c['id']) + ' names an undeclared feature: ' + str(c['feature_id']))
-    recon_argv = parse_argv(reconstruction)
+    recon_argv = resolve_argv(parse_argv(reconstruction))
     orig_argv = None
     mode = 'expected-only'
     if original is not None:
@@ -123,7 +143,7 @@ def differential(run_id, cases_path, reconstruction, original=None, original_pin
         actual = sha256_path(original_pin)
         if actual != approve_original:
             raise ValueError('Original pin changed or approval does not match (sha256 ' + actual + '). Review the file, then approve that exact digest.')
-        orig_argv = parse_argv(original)
+        orig_argv = resolve_argv(parse_argv(original))
         mode = 'differential'
     elif not all('expected' in c for c in cases):
         raise ValueError('Without an approved original, every case needs a source-derived "expected" value.')

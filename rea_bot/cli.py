@@ -16,7 +16,7 @@ def main(argv=None):
     a = sub.add_parser('new'); a.add_argument('target'); a.add_argument('--id'); a.add_argument('--note')
     a = sub.add_parser('inspect'); a.add_argument('run'); a.add_argument('--target')
     a = sub.add_parser('prepare'); a.add_argument('run'); a.add_argument('--input', required=True, help='JSON with evidence, features, improvements')
-    a.add_argument('--engine-waiver', help='Reason the REA engine could not be used (recorded in SPEC.md)')
+    a.add_argument('--engine-waiver', help='Reason the REA engine truly cannot run here (recorded in SPEC.md; refused when the engine is ready)')
     a = sub.add_parser('diff'); a.add_argument('run'); a.add_argument('--cases', required=True)
     a.add_argument('--reconstruction', required=True, help='argv string, e.g. "python3 adapter.py"')
     a.add_argument('--original'); a.add_argument('--original-pin'); a.add_argument('--approve-original')

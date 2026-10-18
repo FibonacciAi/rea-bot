@@ -4,6 +4,9 @@ from pathlib import Path
 
 from . import ROOT, VERSION, engine, entitlements, report, runner, store, workbench
 
+WAIVER_RULE = ('If the engine truly cannot run here, pass --engine-waiver "<reason>" (MCP: engine_waiver); '
+               'it is recorded in SPEC.md. Waivers are refused when the engine is ready.')
+
 
 def status():
     return {'plugin': 'rea-bot', 'version': VERSION, 'display_name': 'Lostwax',
@@ -47,8 +50,7 @@ def prepare(run_id, build, engine_waiver=None):
             if engine.status()['ready'] or not engine_waiver:
                 raise ValueError('This ' + route_info['kind'] + ' route needs real REA engine evidence. Run '
                                  '`rea-bot engine call ' + run_id + '` with analyze_javascript_application (detail summary, focused source_paths) '
-                                 'and link a returned evidence_id. If the engine cannot run on this box, pass --engine-waiver "<reason>"; '
-                                 'the waiver is recorded and shown in SPEC.md.')
+                                 'and link a returned evidence_id. ' + WAIVER_RULE)
             run.update_meta(engine_waiver=engine_waiver)
     spec = workbench.prepare_build(run.meta['target'], build.get('evidence'), build.get('features'), build.get('improvements'))
     sha = run.save_spec(spec)
