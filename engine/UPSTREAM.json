@@ -1,0 +1,11 @@
+{
+  "repository": "https://github.com/morluto/rea",
+  "version": "6.5.0",
+  "commit": "3b79af28e80785afce9f5998d8f03289402a1847",
+  "tag": "rea-agents-6.5.0",
+  "archive": "https://registry.npmjs.org/rea-agents/-/rea-agents-6.5.0.tgz",
+  "integrity": "sha512-C6BG7LyrAdR74mSjertM6PrxJkcNZ2bfQNOJornPo9erDEp2tyPRVYPnV5Yodr+1RqewCQla68WulXlVnveD+A==",
+  "license": "MIT",
+  "copyright": "Copyright (c) 2026 morluto",
+  "verification": "Archive SHA-512 matched registry metadata; provenance payload matched archive and source tag. Sigstore certificate/signature chain not independently verified."
+}

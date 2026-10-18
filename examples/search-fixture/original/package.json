@@ -1,0 +1,7 @@
+{
+  "name": "rea-bot-search-fixture",
+  "version": "1.0.0",
+  "type": "module",
+  "license": "MIT",
+  "exports": "./search.mjs"
+}

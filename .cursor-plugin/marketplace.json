@@ -1,0 +1,16 @@
+{
+  "name": "rea-bot",
+  "owner": {"name": "FibonacciAi"},
+  "metadata": {
+    "description": "Lostwax: study any app, rebuild the part you want, and prove the copy matches.",
+    "version": "0.3.0"
+  },
+  "plugins": [
+    {
+      "name": "rea-bot",
+      "source": ".",
+      "skills": "skills",
+      "description": "Lostwax: evidence-backed understand / rebuild / prove workflow with logged differential parity. Powered by the REA engine."
+    }
+  ]
+}

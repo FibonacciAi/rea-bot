@@ -1,0 +1,155 @@
+[
+ {
+  "id": "case-01",
+  "feature_id": "trim-whitespace",
+  "input": {
+   "items": [
+    "Alpha",
+    "Beta",
+    "alphabet"
+   ],
+   "query": " ALP "
+  }
+ },
+ {
+  "id": "case-02",
+  "feature_id": "empty-query",
+  "input": {
+   "items": [
+    "Alpha",
+    "Beta"
+   ],
+   "query": ""
+  }
+ },
+ {
+  "id": "case-03",
+  "feature_id": "empty-query",
+  "input": {
+   "items": [
+    "Alpha",
+    "Beta"
+   ],
+   "query": "  "
+  }
+ },
+ {
+  "id": "case-04",
+  "feature_id": "substring-filter",
+  "input": {
+   "items": [
+    "Alpha",
+    "Beta"
+   ],
+   "query": "z"
+  }
+ },
+ {
+  "id": "case-05",
+  "feature_id": "substring-filter",
+  "input": {
+   "items": [
+    "x",
+    "x",
+    "X"
+   ],
+   "query": "x"
+  }
+ },
+ {
+  "id": "case-06",
+  "feature_id": "substring-filter",
+  "input": {
+   "items": [],
+   "query": "x"
+  }
+ },
+ {
+  "id": "case-07",
+  "feature_id": "trim-whitespace",
+  "input": {
+   "items": [
+    "Alpha",
+    "Beta"
+   ],
+   "query": "﻿ ALP ﻿"
+  }
+ },
+ {
+  "id": "case-08",
+  "feature_id": "trim-whitespace",
+  "input": {
+   "items": [
+    "Alpha",
+    "Beta"
+   ],
+   "query": " ALP　"
+  }
+ },
+ {
+  "id": "case-09",
+  "feature_id": "unicode-edges",
+  "input": {
+   "items": [
+    "Alpha",
+    "Alpha"
+   ],
+   "query": "alp"
+  }
+ },
+ {
+  "id": "case-10",
+  "feature_id": "unicode-edges",
+  "input": {
+   "items": [
+    "Alpha",
+    "\u001cAlpha"
+   ],
+   "query": "\u001calp"
+  }
+ },
+ {
+  "id": "case-11",
+  "feature_id": "unicode-edges",
+  "input": {
+   "items": [
+    "Straße",
+    "STRASSE"
+   ],
+   "query": "strasse"
+  }
+ },
+ {
+  "id": "case-12",
+  "feature_id": "unicode-edges",
+  "input": {
+   "items": [
+    "İstanbul",
+    "Istanbul"
+   ],
+   "query": "i̇"
+  }
+ },
+ {
+  "id": "case-13",
+  "feature_id": "unicode-edges",
+  "input": {
+   "items": [
+    "​Alpha",
+    "Alpha"
+   ],
+   "query": "​alp"
+  }
+ },
+ {
+  "id": "case-14",
+  "feature_id": "trim-whitespace",
+  "input": {
+   "items": [
+    "Alpha",
+    "Beta"
+   ],
+   "query": "\n\t ALP \r\n"
+  }
+ }
+]
