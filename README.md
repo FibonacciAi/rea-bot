@@ -1,26 +1,82 @@
-<p align="center"><img src="assets/logo.svg" width="96" alt="Lostwax logo"></p>
+<p align="center"><img src="assets/hero.png" alt="Lostwax: study, spec, rebuild, side-by-side, proof" width="100%"></p>
+
+<p align="center">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-5FB8A1?style=flat-square"></a>
+  <img alt="Price: free" src="https://img.shields.io/badge/price-free-C8823A?style=flat-square">
+  <img alt="Grok Bot plugin" src="https://img.shields.io/badge/Grok%20Bot-plugin-17140F?style=flat-square">
+  <img alt="MCP server" src="https://img.shields.io/badge/MCP-stdio%20server-E07A5F?style=flat-square">
+</p>
 
 # Lostwax
 
 **Mold the original. Cast the copy. Prove it matches.**
 
-Free and open source (MIT). No accounts, keys or payments.
-
-Lostwax is a Grok Bot / Cursor plugin for studying an app, repository, npm package, website or binary, rebuilding the feature you want, and proving the rebuild behaves like the original. It runs both on the same inputs and keeps logs pinned by SHA-256. It's powered by the open-source [REA](https://github.com/morluto/rea) analysis engine.
+Lostwax is a free, MIT-licensed Grok Bot / Cursor plugin for studying an app, repository, npm package, website or binary, rebuilding the feature you want, and proving the rebuild behaves like the original. It runs the original and your rebuild side by side on the same inputs, logs every output pinned by SHA-256, and only counts a pass when it comes from one of those logged runs. It never claims more than it tested. No accounts, keys or payments. Powered by the open-source [REA](https://github.com/morluto/rea) engine (MIT, by morluto). Independent integration.
 
 > Code id: `rea-bot` (CLI, MCP server and skill ids). Lostwax is the bot-and-marketplace successor to REA Native, the Codex plugin.
 
-## What it does
+## Scorecard
+
+Real output from `bash scripts/e2e_box.sh` and the reviewer sequence on the bundled search fixture: the same 14 inputs through the original (Node) and two Python rebuilds.
+
+<p align="center"><img src="assets/scorecard.png" alt="Scorecard: naive rebuild 11/14 with case-07, case-09 and case-10 mismatching; fixed rebuild 14/14; 4/4 features runner-attested; recheck log_intact true, regressed false" width="100%"></p>
+
+## Demo
+
+The actual CLI session, rendered from its captured output ([transcript](assets/demo-transcript.txt)):
+
+<p align="center"><img src="assets/demo.gif" alt="Terminal demo: status, new, inspect, prepare, pin, a refused wrong digest, naive diff 11/14, fixed diff 14/14, parity 4/4 runner-attested, recheck log_intact true and regressed false" width="100%"></p>
+
+## How it works
+
+```mermaid
+flowchart LR
+  T["Target<br/>app · repo · npm · site · binary"] --> S["Study<br/>new · inspect"]
+  E[("Optional REA engine")] -. evidence .-> S
+  S --> P["Spec<br/>prepare → SPEC.md"]
+  P --> R["Rebuild<br/>in your workspace"]
+  R --> D{"Side-by-side<br/>pin · diff"}
+  D -- "mismatch: fix and re-run" --> R
+  D -- "cases match" --> Q["Proof<br/>parity → PARITY.md"]
+  Q --> C["Re-check<br/>recheck --rerun"]
+```
+
+<p align="center"><img src="assets/flow.png" alt="How Lostwax works: study, spec, rebuild, side-by-side, proof" width="100%"></p>
 
 1. **Understand.** Routes one target, takes a bounded static inventory, and (for shipped JavaScript, Electron, binaries, archives, .NET or wasm) collects real REA engine evidence.
 2. **Rebuild.** Turns the evidence into a small, digest-pinned capability matrix (SPEC.md). The bot builds and tests the rebuild in your workspace.
 3. **Prove.** `diff` runs the original (only after you approve its exact digest) and the rebuild on identical cases, logs every output, and writes PARITY.md. Passes are marked *runner-attested*, and claims typed in by hand can't override them. Global parity always stays "unknown": a finite pass is never sold as "the whole product matches".
 
-## Use it
+## Install
 
-In chat: *"Use Lostwax to understand /workspace/my-app and rebuild its search in Python, with proof."*
+**Grok Bot.** Add the plugin from this repository's URL, `https://github.com/FibonacciAi/rea-bot`. The app registers both skills and starts the MCP server from `mcp.json`. Don't hand-edit `settings.json` or the plugin caches. To install as plain user skills on the box instead, run `python3 scripts/install_local.py` to see the plan, then add `--apply` (it copies the plugin and writes the two skills, nothing else).
 
-From Shell (every command prints JSON):
+**Cursor.** The repo ships a Cursor plugin manifest (`.cursor-plugin/plugin.json`), so you can add it as a plugin from the same URL. To use only the MCP server, clone the repo and add it to `.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "rea-bot": { "command": "python3", "args": ["/abs/path/to/rea-bot/server/mcp_server.py"] }
+  }
+}
+```
+
+Needs Python 3.10+ and Node for running JavaScript originals. No other dependencies.
+
+## Example prompts
+
+- *"Lostwax status"*
+- *"Use Lostwax on its bundled example: rebuild the search fixture and prove it matches."*
+- *"Now try the naive rebuild in reconstruction-naive."*
+- *"Re-check that run, re-running the cases."*
+- *"Use Lostwax to understand /workspace/my-app and rebuild its search in Python, with proof."*
+- *"Study this npm package, write a spec for its date parsing, and show me the parity report."*
+
+The bot shows you the exact command and digest before it runs any original, and asks first.
+
+## From Shell
+
+Every command prints JSON:
 
 ```sh
 P=<plugin folder>

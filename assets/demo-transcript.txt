@@ -1,0 +1,64 @@
+# Real CLI session captured on 2026-10-17 in /tmp/lostwax (a git archive of this repo). Commands ran in one bash session; output is verbatim.
+$ export REA_BOT_HOME=/tmp/lostwax-runs; EX=$PWD/examples/search-fixture
+lw() { python3 bin/rea-bot "$@"; }
+
+
+$ lw status | jq '{version, engine_ready: .engine.ready, plan: .entitlements.plan}'
+{
+  "version": "0.3.0",
+  "engine_ready": false,
+  "plan": "free"
+}
+
+$ lw new $EX/original --id search | jq '{run, kind: .route.kind}'
+{
+  "run": "search",
+  "kind": "javascript-application"
+}
+
+$ lw inspect search | jq -c '{kind, files: .coverage.files_seen}'
+{"kind":"javascript-application","files":3}
+
+$ lw prepare search --input $EX/build.json \
+  --engine-waiver "REA engine not staged" | jq -c .features
+["trim-whitespace","empty-query","substring-filter","unicode-edges"]
+
+$ PIN=$(lw pin $EX/original | jq -r .sha256); echo $PIN
+bad01a5a1b3147c7de2f90d1674aa5aa3d8cf013a29c8c711e8352a3a2b268bd
+
+$ lw diff search --cases $EX/cases.json \
+  --reconstruction "python3 $EX/reconstruction/adapter.py" \
+  --original "node $EX/original/adapter.mjs" \
+  --original-pin $EX/original --approve-original 0000 \
+  | jq -r .error
+Original pin changed or approval does not match (sha256 bad01a5a1b3147c7de2f90d1674aa5aa3d8cf013a29c8c711e8352a3a2b268bd). Review the file, then approve that exact digest.
+
+$ lw diff search --cases $EX/cases.json \
+  --reconstruction "python3 $EX/reconstruction-naive/adapter.py" \
+  --original "node $EX/original/adapter.mjs" \
+  --original-pin $EX/original --approve-original $PIN \
+  | jq -c '{matches,cases,mismatches}'
+{"matches":11,"cases":14,"mismatches":["case-07","case-09","case-10"]}
+
+$ lw diff search --cases $EX/cases.json \
+  --reconstruction "python3 $EX/reconstruction/adapter.py" \
+  --original "node $EX/original/adapter.mjs" \
+  --original-pin $EX/original --approve-original $PIN \
+  | jq -c '{matches,cases,mismatches}'
+{"matches":14,"cases":14,"mismatches":[]}
+
+$ lw parity search | jq '{counts, runner_attested_passes, global_parity}'
+{
+  "counts": {
+    "passed": 4,
+    "failed": 0,
+    "blocked": 0,
+    "not-run": 0
+  },
+  "runner_attested_passes": 4,
+  "global_parity": "unknown"
+}
+
+$ lw recheck search --rerun | jq -c '{log_intact, regressed}'
+{"log_intact":true,"regressed":false}
+
