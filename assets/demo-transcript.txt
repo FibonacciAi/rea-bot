@@ -1,4 +1,4 @@
-# Real CLI session captured on 2026-10-17 in /tmp/lostwax (a git archive of this repo). Commands ran in one bash session; output is verbatim.
+# Real CLI session captured on 2026-10-17 in /tmp/lostwax (a git archive of this repo) with the REA engine staged (rea-agents 6.5.0, Node v22.20.0). Commands ran in one bash session; output is verbatim.
 $ export REA_BOT_HOME=/tmp/lostwax-runs; EX=$PWD/examples/search-fixture
 lw() { python3 bin/rea-bot "$@"; }
 
@@ -6,7 +6,7 @@ lw() { python3 bin/rea-bot "$@"; }
 $ lw status | jq '{version, engine_ready: .engine.ready, plan: .entitlements.plan}'
 {
   "version": "0.3.0",
-  "engine_ready": false,
+  "engine_ready": true,
   "plan": "free"
 }
 
@@ -19,9 +19,21 @@ $ lw new $EX/original --id search | jq '{run, kind: .route.kind}'
 $ lw inspect search | jq -c '{kind, files: .coverage.files_seen}'
 {"kind":"javascript-application","files":3}
 
-$ lw prepare search --input $EX/build.json \
-  --engine-waiver "REA engine not staged" | jq -c .features
-["trim-whitespace","empty-query","substring-filter","unicode-edges"]
+$ lw engine status | jq -c '{ready, pinned}'
+jq -n --arg p $EX/original '[{tool: "analyze_javascript_application", arguments:
+  {input_path: $p, format: "directory", source_paths: ["search.mjs"], detail: "summary"}}]' \
+  > $REA_BOT_HOME/calls.json
+lw engine call search --calls $REA_BOT_HOME/calls.json > $REA_BOT_HOME/eng.json
+jq -c '.calls[0] | {tool, is_error, evidence_id: .evidence_ids[0]}' $REA_BOT_HOME/eng.json
+{"ready":true,"pinned":"rea-agents@6.5.0"}
+{"tool":"analyze_javascript_application","is_error":false,"evidence_id":"ev_7247ae0abe15762aba21e0bf55e553a68b3e7d94c3aa594ba9342d7e3124bd60"}
+
+$ jq --slurpfile e $REA_BOT_HOME/eng.json '$e[0].calls[0] as $c
+  | .evidence += [{id: $c.evidence_ids[0], state: "observed-static", locator: $c.result_file,
+      summary: "REA analyze_javascript_application summary of search.mjs"}]
+  | .features[0].evidence_ids += [$c.evidence_ids[0]]' $EX/build.json > $REA_BOT_HOME/build.json
+lw prepare search --input $REA_BOT_HOME/build.json | jq -c '{spec: .spec_sha256[:16], features}'
+{"spec":"558461d9d22497f3","features":["trim-whitespace","empty-query","substring-filter","unicode-edges"]}
 
 $ PIN=$(lw pin $EX/original | jq -r .sha256); echo $PIN
 bad01a5a1b3147c7de2f90d1674aa5aa3d8cf013a29c8c711e8352a3a2b268bd
@@ -61,4 +73,3 @@ $ lw parity search | jq '{counts, runner_attested_passes, global_parity}'
 
 $ lw recheck search --rerun | jq -c '{log_intact, regressed}'
 {"log_intact":true,"regressed":false}
-

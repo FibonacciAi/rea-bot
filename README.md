@@ -23,9 +23,9 @@ Real output from `bash scripts/e2e_box.sh` and the reviewer sequence on the bund
 
 ## Demo
 
-The actual CLI session, rendered from its captured output ([transcript](assets/demo-transcript.txt)):
+The actual CLI session with the REA engine staged (rea-agents 6.5.0), rendered from its captured output ([transcript](assets/demo-transcript.txt)):
 
-<p align="center"><img src="assets/demo.gif" alt="Terminal demo: status, new, inspect, prepare, pin, a refused wrong digest, naive diff 11/14, fixed diff 14/14, parity 4/4 runner-attested, recheck log_intact true and regressed false" width="100%"></p>
+<p align="center"><img src="assets/demo.gif" alt="Terminal demo: status, new, inspect, REA engine evidence from analyze_javascript_application, prepare with that evidence linked (no waiver), pin, a refused wrong digest, naive diff 11/14, fixed diff 14/14, parity 4/4 runner-attested, recheck log_intact true and regressed false" width="100%"></p>
 
 ## How it works
 
