@@ -1,0 +1,1253 @@
+[
+  {
+    "coverage_id": "rea_bot%2F__init__.py%23ROOT::ATTACK-CLASSES.md%23Obvious%20things::rea_bot::ATTACK-CLASSES.md%23Obvious%20things",
+    "canonical_refs": {
+      "surface": "rea_bot/__init__.py#ROOT",
+      "boundary": "ATTACK-CLASSES.md#Obvious things",
+      "subsystem": "rea_bot",
+      "attack_class": "ATTACK-CLASSES.md#Obvious things"
+    },
+    "surface": "rea_bot/__init__.py#ROOT",
+    "boundary": "ATTACK-CLASSES.md#Obvious things",
+    "subsystem": "rea_bot",
+    "attack_class": "ATTACK-CLASSES.md#Obvious things",
+    "starting_paths": [
+      "rea_bot",
+      "server",
+      "scripts",
+      "engine/UPSTREAM.json",
+      ".gitignore"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Obvious things",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "No browser DOM, extension, service worker, or webview source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "No HTTP server, cookie session, OAuth, or mTLS. route_target does not open URLs."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "No IAM, container, or cloud control-plane manifests."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Core discipline",
+        "reason": "Python standard library only; no unsafe native parser or kernel interface."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+        "reason": "Single-operator run directory; source has no tenant or cross-account key."
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-files",
+    "reviewed_paths": [
+      "rea_bot/__init__.py",
+      "rea_bot/runner.py",
+      "rea_bot/engine.py",
+      "engine/UPSTREAM.json",
+      ".gitignore",
+      "scripts/e2e_box.sh"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-files",
+        "reviewed_paths": [
+          "rea_bot/__init__.py",
+          "rea_bot/runner.py",
+          "rea_bot/engine.py",
+          "engine/UPSTREAM.json",
+          ".gitignore",
+          "scripts/e2e_box.sh"
+        ],
+        "invariant": "The tree must not ship live credentials, eval, or shell=True.",
+        "method": "source",
+        "result": "No private-key block, cloud token, eval, exec, or shell=True in the scoped tree. subprocess calls use argv lists. .gitignore covers .env*, netrc, pem, and key names. UPSTREAM.json is a public pin.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "rea_bot%2Fapi.py%23certify::rea_bot%2Fworkbench.py%23assess_parity::rea_bot::ATTACK-CLASSES.md%23Business%20logic",
+    "canonical_refs": {
+      "surface": "rea_bot/api.py#certify",
+      "boundary": "rea_bot/workbench.py#assess_parity",
+      "subsystem": "rea_bot",
+      "attack_class": "ATTACK-CLASSES.md#Business logic"
+    },
+    "surface": "rea_bot/api.py#certify",
+    "boundary": "rea_bot/workbench.py#assess_parity",
+    "subsystem": "rea_bot",
+    "attack_class": "ATTACK-CLASSES.md#Business logic",
+    "starting_paths": [
+      "rea_bot/api.py",
+      "rea_bot/workbench.py",
+      "rea_bot/entitlements.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Business logic",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "No browser DOM, extension, service worker, or webview source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "No HTTP server, cookie session, OAuth, or mTLS. route_target does not open URLs."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "No IAM, container, or cloud control-plane manifests."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Core discipline",
+        "reason": "Python standard library only; no unsafe native parser or kernel interface."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+        "reason": "Single-operator run directory; source has no tenant or cross-account key."
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-exec",
+    "reviewed_paths": [
+      "rea_bot/api.py",
+      "rea_bot/workbench.py",
+      "rea_bot/entitlements.py",
+      "rea_bot/report.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-exec",
+        "reviewed_paths": [
+          "rea_bot/api.py",
+          "rea_bot/workbench.py",
+          "rea_bot/entitlements.py",
+          "rea_bot/report.py"
+        ],
+        "invariant": "Caller-supplied parity rows must not be mistaken for a second principal's authorization.",
+        "method": "source",
+        "result": "certify copies counts and runner_attested_passes from assess_parity after requiring an intact differential summary for the same spec. Caller rows can raise counts.passed above runner_attested_passes. The same operator supplies the rows and receives the unsigned certificate. PARITY.md and assess_parity.scope document caller rows as accounted, not verified. No cross-principal boundary.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "Certificate omits caller_supplied_passes; readers can still subtract counts.passed minus runner_attested_passes."
+    ]
+  },
+  {
+    "coverage_id": "rea_bot%2Fapi.py%23recheck::rea_bot%2Frunner.py%23verify_diff::rea_bot::ATTACK-CLASSES.md%23Business%20logic",
+    "canonical_refs": {
+      "surface": "rea_bot/api.py#recheck",
+      "boundary": "rea_bot/runner.py#verify_diff",
+      "subsystem": "rea_bot",
+      "attack_class": "ATTACK-CLASSES.md#Business logic"
+    },
+    "surface": "rea_bot/api.py#recheck",
+    "boundary": "rea_bot/runner.py#verify_diff",
+    "subsystem": "rea_bot",
+    "attack_class": "ATTACK-CLASSES.md#Business logic",
+    "starting_paths": [
+      "rea_bot/api.py",
+      "rea_bot/runner.py",
+      "skills/parity-recheck/SKILL.md"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Business logic",
+    "selected_companion_blocks": [
+      "AI-AND-LLM.md#Core discipline",
+      "AI-AND-LLM.md#Action-confirmation and approval binding",
+      "AI-AND-LLM.md#Universal moves",
+      "AI-AND-LLM.md#Validation rules",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local file ownership and TOCTOU",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "No browser DOM, extension, service worker, or webview source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "No HTTP server, cookie session, OAuth, or mTLS. route_target does not open URLs."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "No IAM, container, or cloud control-plane manifests."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Core discipline",
+        "reason": "Python standard library only; no unsafe native parser or kernel interface."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+        "reason": "Single-operator run directory; source has no tenant or cross-account key."
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-exec",
+    "reviewed_paths": [
+      "rea_bot/api.py",
+      "rea_bot/runner.py",
+      "skills/parity-recheck/SKILL.md",
+      "server/mcp_server.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-exec",
+        "reviewed_paths": [
+          "rea_bot/api.py",
+          "rea_bot/runner.py",
+          "skills/parity-recheck/SKILL.md",
+          "server/mcp_server.py"
+        ],
+        "invariant": "recheck --rerun must not execute a substituted command while reporting the stored log intact, across a real trust boundary.",
+        "method": "source",
+        "result": "verify_diff hashes only summary log bytes. recheck still calls differential when intact is false, and differential re-checks only the pin digest before running stored argv. A writer who can edit summary.json is the same OS principal recheck runs as. The skill stop rule is a prompt. Same-account integrity gap, not a cross-principal finding.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "Bind stored argv into the digest and refuse rerun when the log digest does not match. Kill the child process group on timeout."
+    ]
+  },
+  {
+    "coverage_id": "rea_bot%2Fcli.py%23main::rea_bot%2Frunner.py%23parse_argv::rea_bot::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "rea_bot/cli.py#main",
+      "boundary": "rea_bot/runner.py#parse_argv",
+      "subsystem": "rea_bot",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "rea_bot/cli.py#main",
+    "boundary": "rea_bot/runner.py#parse_argv",
+    "subsystem": "rea_bot",
+    "attack_class": "ATTACK-CLASSES.md#Injection",
+    "starting_paths": [
+      "rea_bot/cli.py",
+      "rea_bot/runner.py",
+      "bin/rea-bot"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "AI-AND-LLM.md#Core discipline",
+      "AI-AND-LLM.md#Tool-argument injection into a downstream sink",
+      "AI-AND-LLM.md#Universal moves",
+      "AI-AND-LLM.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "No browser DOM, extension, service worker, or webview source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "No HTTP server, cookie session, OAuth, or mTLS. route_target does not open URLs."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "No IAM, container, or cloud control-plane manifests."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Core discipline",
+        "reason": "Python standard library only; no unsafe native parser or kernel interface."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+        "reason": "Single-operator run directory; source has no tenant or cross-account key."
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-exec",
+    "reviewed_paths": [
+      "rea_bot/cli.py",
+      "rea_bot/runner.py",
+      "bin/rea-bot"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-exec",
+        "reviewed_paths": [
+          "rea_bot/cli.py",
+          "rea_bot/runner.py",
+          "bin/rea-bot"
+        ],
+        "invariant": "CLI command strings are not passed through a shell.",
+        "method": "source",
+        "result": "parse_argv uses shlex.split or a string list. run_once calls subprocess.run with the argv list and does not set shell=True. Metacharacters remain argv tokens.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "rea_bot%2Fengine.py%23Session.request::rea_bot%2Fengine.py%23Session.request::engine::PROTOCOLS-RPC-AND-MESSAGING.md%23Peer%20identity%20to%20application-principal%20confusion",
+    "canonical_refs": {
+      "surface": "rea_bot/engine.py#Session.request",
+      "boundary": "rea_bot/engine.py#Session.request",
+      "subsystem": "engine",
+      "attack_class": "PROTOCOLS-RPC-AND-MESSAGING.md#Peer identity to application-principal confusion"
+    },
+    "surface": "rea_bot/engine.py#Session.request",
+    "boundary": "rea_bot/engine.py#Session.request",
+    "subsystem": "engine",
+    "attack_class": "PROTOCOLS-RPC-AND-MESSAGING.md#Peer identity to application-principal confusion",
+    "starting_paths": [
+      "rea_bot/engine.py",
+      "rea_bot/api.py",
+      "server/mcp_server.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "PROTOCOLS-RPC-AND-MESSAGING.md#Core discipline",
+      "PROTOCOLS-RPC-AND-MESSAGING.md#Message boundary and canonicalization disagreement",
+      "PROTOCOLS-RPC-AND-MESSAGING.md#Peer identity to application-principal confusion",
+      "PROTOCOLS-RPC-AND-MESSAGING.md#Universal moves",
+      "PROTOCOLS-RPC-AND-MESSAGING.md#Validation rules",
+      "AI-AND-LLM.md#Sub-agent and MCP trust inheritance",
+      "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Unbounded buffering and cardinality"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "No browser DOM, extension, service worker, or webview source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "No HTTP server, cookie session, OAuth, or mTLS."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "No IAM, container, or cloud control-plane manifests."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Core discipline",
+        "reason": "Python standard library only."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+        "reason": "Single-operator run directory; no tenant key."
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 2,
+    "status": "covered",
+    "agent_id": "hunter-session",
+    "reviewed_paths": [
+      "rea_bot/engine.py",
+      "server/mcp_server.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-session",
+        "reviewed_paths": [
+          "rea_bot/engine.py",
+          "server/mcp_server.py"
+        ],
+        "invariant": "Reverse JSON-RPC from the local engine child must not be granted, and framing limits matter only if another principal is affected.",
+        "method": "source",
+        "result": "Session.request answers inbound method+id frames with JSON-RPC -32601 and does not dispatch them. Result frames must match the outstanding id. readline is unbounded and self.timeout is unused. Both affect only the operator process that spawned the engine. No remote peer is accepted.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "critic_origin": "final-clean critic wave 1: engine Session.request is a parallel JSON-RPC client not started by the stdio MCP framing unit",
+    "hardening": [
+      "Apply self.timeout to engine stdout reads and cap line size the way the stdio MCP server caps requests."
+    ]
+  },
+  {
+    "coverage_id": "rea_bot%2Fengine.py%23call_batch::rea_bot%2Fengine.py%23collect_evidence::engine::AI-AND-LLM.md%23Sub-agent%20and%20MCP%20trust%20inheritance",
+    "canonical_refs": {
+      "surface": "rea_bot/engine.py#call_batch",
+      "boundary": "rea_bot/engine.py#collect_evidence",
+      "subsystem": "engine",
+      "attack_class": "AI-AND-LLM.md#Sub-agent and MCP trust inheritance"
+    },
+    "surface": "rea_bot/engine.py#call_batch",
+    "boundary": "rea_bot/engine.py#collect_evidence",
+    "subsystem": "engine",
+    "attack_class": "AI-AND-LLM.md#Sub-agent and MCP trust inheritance",
+    "starting_paths": [
+      "rea_bot/engine.py",
+      "rea_bot/api.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Chained vulnerabilities and trust boundaries",
+    "selected_companion_blocks": [
+      "AI-AND-LLM.md#Core discipline",
+      "AI-AND-LLM.md#Sub-agent and MCP trust inheritance",
+      "AI-AND-LLM.md#MCP metadata and schema as policy",
+      "AI-AND-LLM.md#Universal moves",
+      "AI-AND-LLM.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "No browser DOM, extension, service worker, or webview source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "No HTTP server, cookie session, OAuth, or mTLS. route_target does not open URLs."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "No IAM, container, or cloud control-plane manifests."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Core discipline",
+        "reason": "Python standard library only; no unsafe native parser or kernel interface."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+        "reason": "Single-operator run directory; source has no tenant or cross-account key."
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "hunter-engine",
+    "reviewed_paths": [
+      "server/mcp_server.py",
+      "rea_bot/engine.py",
+      "rea_bot/api.py",
+      "rea_bot/store.py",
+      "rea_bot/workbench.py",
+      "assets/demo-transcript.txt"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-engine",
+        "reviewed_paths": [
+          "server/mcp_server.py",
+          "rea_bot/engine.py",
+          "rea_bot/api.py",
+          "rea_bot/store.py",
+          "rea_bot/workbench.py"
+        ],
+        "invariant": "JavaScript prepare must unlock only on evidence ids the engine produced, not on target-controlled keys the engine might echo.",
+        "method": "source",
+        "result": "collect_evidence records every nested evidence_id string from a non-error engine result, including JSON parsed from text content. prepare accepts the build when any evidence row id is in that set. The rea-agents program is not in this repository, so echo behavior is not source-visible.",
+        "artifact": null
+      },
+      {
+        "agent_id": "verifier-engine",
+        "reviewed_paths": [
+          "rea_bot/engine.py",
+          "rea_bot/api.py",
+          "rea_bot/store.py",
+          "rea_bot/workbench.py",
+          "server/mcp_server.py"
+        ],
+        "invariant": "JavaScript prepare unlocks only on evidence ids that cannot be supplied by target-controlled keys.",
+        "method": "source",
+        "result": "Independent review kept needs_validation. This repo stores any nested evidence_id string and prepare accepts membership. The real rea-agents result shape is not in the tree, so echo behavior stays blocked.",
+        "artifact": null
+      },
+      {
+        "agent_id": "p5-engine",
+        "reviewed_paths": [
+          "rea_bot/engine.py",
+          "rea_bot/api.py",
+          "rea_bot/store.py",
+          "rea_bot/workbench.py",
+          "server/mcp_server.py",
+          "assets/demo-transcript.txt"
+        ],
+        "invariant": "The needs_validation record's trace, blocker, and non-destructive plan match source.",
+        "method": "source",
+        "result": "Phase 5 verified the record. The demo transcript shows only an ev_ summary id, not a result body. The real engine echo remains unresolved.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "rea_bot/engine.collect_evidence.nested-evidence-id"
+    ],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "rea_bot%2Fengine.py%23stage_node::rea_bot%2Fengine.py%23setup::engine::SUPPLY-CHAIN-AND-RELEASE.md%23Mutable%20and%20unbound%20build%20inputs",
+    "canonical_refs": {
+      "surface": "rea_bot/engine.py#stage_node",
+      "boundary": "rea_bot/engine.py#setup",
+      "subsystem": "engine",
+      "attack_class": "SUPPLY-CHAIN-AND-RELEASE.md#Mutable and unbound build inputs"
+    },
+    "surface": "rea_bot/engine.py#stage_node",
+    "boundary": "rea_bot/engine.py#setup",
+    "subsystem": "engine",
+    "attack_class": "SUPPLY-CHAIN-AND-RELEASE.md#Mutable and unbound build inputs",
+    "starting_paths": [
+      "rea_bot/engine.py",
+      "engine/UPSTREAM.json",
+      "engine/vendor-integrity.json",
+      "engine/package-lock.json"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Cryptography and secrets",
+    "selected_companion_blocks": [
+      "SUPPLY-CHAIN-AND-RELEASE.md#Core discipline",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Mutable and unbound build inputs",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Dependency source and namespace confusion",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Universal moves",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "No browser DOM, extension, service worker, or webview source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "No HTTP server, cookie session, OAuth, or mTLS. route_target does not open URLs."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "No IAM, container, or cloud control-plane manifests."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Core discipline",
+        "reason": "Python standard library only; no unsafe native parser or kernel interface."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+        "reason": "Single-operator run directory; source has no tenant or cross-account key."
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-engine",
+    "reviewed_paths": [
+      "rea_bot/engine.py",
+      "engine/UPSTREAM.json",
+      "engine/vendor-integrity.json",
+      "engine/package-lock.json"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-engine",
+        "reviewed_paths": [
+          "rea_bot/engine.py",
+          "engine/UPSTREAM.json",
+          "engine/vendor-integrity.json",
+          "engine/package-lock.json"
+        ],
+        "invariant": "Engine bytes must stay bound to the in-repo pin before npm ci.",
+        "method": "source",
+        "result": "setup checks the tarball against UPSTREAM.json SHA-512, extracts with filter=data, and verify_tree requires vendor-integrity.json including the repo lockfile. npm ci uses --ignore-scripts. Node is checked against SHASUMS256.txt from the same nodejs.org directory the README names. A substituted engine archive fails the in-repo pin.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "rea_bot%2Frunner.py%23run_once::rea_bot%2Frunner.py%23run_once::rea_bot::RESOURCE-EXHAUSTION-AND-AVAILABILITY.md%23Detached%20work%20after%20cancellation",
+    "canonical_refs": {
+      "surface": "rea_bot/runner.py#run_once",
+      "boundary": "rea_bot/runner.py#run_once",
+      "subsystem": "rea_bot",
+      "attack_class": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Detached work after cancellation"
+    },
+    "surface": "rea_bot/runner.py#run_once",
+    "boundary": "rea_bot/runner.py#run_once",
+    "subsystem": "rea_bot",
+    "attack_class": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Detached work after cancellation",
+    "starting_paths": [
+      "rea_bot/runner.py",
+      "server/mcp_server.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Resource and file handling",
+    "selected_companion_blocks": [
+      "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Core discipline",
+      "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Detached work after cancellation",
+      "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Unbounded buffering and cardinality",
+      "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Universal moves",
+      "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "No browser DOM, extension, service worker, or webview source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "No HTTP server, cookie session, OAuth, or mTLS. route_target does not open URLs."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "No IAM, container, or cloud control-plane manifests."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Core discipline",
+        "reason": "Python standard library only; no unsafe native parser or kernel interface."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+        "reason": "Single-operator run directory; source has no tenant or cross-account key."
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-exec",
+    "reviewed_paths": [
+      "rea_bot/runner.py",
+      "server/mcp_server.py",
+      "rea_bot/api.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-exec",
+        "reviewed_paths": [
+          "rea_bot/runner.py",
+          "server/mcp_server.py",
+          "rea_bot/api.py"
+        ],
+        "invariant": "Case timeout and minimal environment must hold for the direct child without being graded as a multi-tenant availability bug.",
+        "method": "source",
+        "result": "run_once copies only PATH, LANG, LC_ALL, and TZ, sets HOME to the case directory, and passes timeout to subprocess.run. Timeout None disables the deadline. The direct child is killed on timeout; descendants that call setsid are not. The child runs as the requester. Source says this is not a sandbox. No shared service.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "Clamp timeout to a positive finite maximum and start a new session so the process group is killed with the child."
+    ]
+  },
+  {
+    "coverage_id": "rea_bot%2Fstore.py%23Run::rea_bot%2Fstore.py%23RUN_ID::rea_bot::ATTACK-CLASSES.md%23Resource%20and%20file%20handling",
+    "canonical_refs": {
+      "surface": "rea_bot/store.py#Run",
+      "boundary": "rea_bot/store.py#RUN_ID",
+      "subsystem": "rea_bot",
+      "attack_class": "ATTACK-CLASSES.md#Resource and file handling"
+    },
+    "surface": "rea_bot/store.py#Run",
+    "boundary": "rea_bot/store.py#RUN_ID",
+    "subsystem": "rea_bot",
+    "attack_class": "ATTACK-CLASSES.md#Resource and file handling",
+    "starting_paths": [
+      "rea_bot/store.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Resource and file handling",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "No browser DOM, extension, service worker, or webview source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "No HTTP server, cookie session, OAuth, or mTLS. route_target does not open URLs."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "No IAM, container, or cloud control-plane manifests."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Core discipline",
+        "reason": "Python standard library only; no unsafe native parser or kernel interface."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+        "reason": "Single-operator run directory; source has no tenant or cross-account key."
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-files",
+    "reviewed_paths": [
+      "rea_bot/store.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-files",
+        "reviewed_paths": [
+          "rea_bot/store.py"
+        ],
+        "invariant": "Run ids cannot path-traverse out of REA_BOT_HOME.",
+        "method": "source",
+        "result": "RUN_ID fullmatch rejects slash, dot-dot, uppercase, and a leading hyphen before the path join. new_run uses the same grammar and exist_ok false.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "rea_bot%2Fworkbench.py%23inspect_local::rea_bot%2Fworkbench.py%23local_path::rea_bot::ATTACK-CLASSES.md%23Resource%20and%20file%20handling",
+    "canonical_refs": {
+      "surface": "rea_bot/workbench.py#inspect_local",
+      "boundary": "rea_bot/workbench.py#local_path",
+      "subsystem": "rea_bot",
+      "attack_class": "ATTACK-CLASSES.md#Resource and file handling"
+    },
+    "surface": "rea_bot/workbench.py#inspect_local",
+    "boundary": "rea_bot/workbench.py#local_path",
+    "subsystem": "rea_bot",
+    "attack_class": "ATTACK-CLASSES.md#Resource and file handling",
+    "starting_paths": [
+      "rea_bot/workbench.py",
+      "rea_bot/api.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Resource and file handling",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local file ownership and TOCTOU",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Credential-store and local-secret boundary mismatch",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "No browser DOM, extension, service worker, or webview source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "No HTTP server, cookie session, OAuth, or mTLS. route_target does not open URLs."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "No IAM, container, or cloud control-plane manifests."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Core discipline",
+        "reason": "Python standard library only; no unsafe native parser or kernel interface."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+        "reason": "Single-operator run directory; source has no tenant or cross-account key."
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "hunter-files",
+    "reviewed_paths": [
+      "server/mcp_server.py",
+      "rea_bot/api.py",
+      "rea_bot/workbench.py",
+      "tests/test_workbench.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-files",
+        "reviewed_paths": [
+          "rea_bot/workbench.py",
+          "server/mcp_server.py",
+          "rea_bot/api.py"
+        ],
+        "invariant": "Selected symlinks, devices, and exact private path parts are refused before a read.",
+        "method": "source",
+        "result": "local_path rejects a final symlink, a fifo, and resolved parts that contain .ssh. Walk does not follow links. A case-variant directory component such as .SSH is not in PRIVATE_PARTS, and secret_name does not treat .ssh as a secret name. On a case-sensitive filesystem that variant is a different directory.",
+        "artifact": null
+      },
+      {
+        "agent_id": "verifier-path",
+        "reviewed_paths": [
+          "rea_bot/workbench.py",
+          "server/mcp_server.py",
+          "rea_bot/api.py",
+          "tests/test_workbench.py"
+        ],
+        "invariant": "Case-variant private directory spellings are excluded before inventory opens a file, on every filesystem this tree can observe.",
+        "method": "source",
+        "result": "Independent review kept needs_validation. PRIVATE_PARTS membership is case-sensitive and secret_name does not list .ssh. Child dot-names are skipped, but the selected path is not. This Linux host cannot show whether APFS resolve rewrites .SSH to .ssh.",
+        "artifact": null
+      },
+      {
+        "agent_id": "p5-path",
+        "reviewed_paths": [
+          "rea_bot/workbench.py",
+          "server/mcp_server.py",
+          "rea_bot/api.py",
+          "tests/test_workbench.py"
+        ],
+        "invariant": "The needs_validation record matches the selected-path denylist and does not claim a body leak or a Linux bypass.",
+        "method": "source",
+        "result": "Phase 5 verified the record. Lines match. Blocker is the unobserved case-folding of a real SSH directory. Plan does not print file bodies.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "rea_bot/workbench.py:local_path:PRIVATE_PARTS"
+    ],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "rea_bot%2Fworkbench.py%23inspect_local::rea_bot%2Fworkbench.py%23secret_name::rea_bot::AI-AND-LLM.md%23Sensitive%20context%20extraction",
+    "canonical_refs": {
+      "surface": "rea_bot/workbench.py#inspect_local",
+      "boundary": "rea_bot/workbench.py#secret_name",
+      "subsystem": "rea_bot",
+      "attack_class": "AI-AND-LLM.md#Sensitive context extraction"
+    },
+    "surface": "rea_bot/workbench.py#inspect_local",
+    "boundary": "rea_bot/workbench.py#secret_name",
+    "subsystem": "rea_bot",
+    "attack_class": "AI-AND-LLM.md#Sensitive context extraction",
+    "starting_paths": [
+      "rea_bot/workbench.py",
+      "rea_bot/report.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Feature abuse and data leakage",
+    "selected_companion_blocks": [
+      "AI-AND-LLM.md#Core discipline",
+      "AI-AND-LLM.md#Sensitive context extraction",
+      "AI-AND-LLM.md#Universal moves",
+      "AI-AND-LLM.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "No browser DOM, extension, service worker, or webview source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "No HTTP server, cookie session, OAuth, or mTLS. route_target does not open URLs."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "No IAM, container, or cloud control-plane manifests."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Core discipline",
+        "reason": "Python standard library only; no unsafe native parser or kernel interface."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+        "reason": "Single-operator run directory; source has no tenant or cross-account key."
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-files",
+    "reviewed_paths": [
+      "rea_bot/workbench.py",
+      "rea_bot/api.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-files",
+        "reviewed_paths": [
+          "rea_bot/workbench.py",
+          "rea_bot/api.py"
+        ],
+        "invariant": "Inventory results must not include file body text.",
+        "method": "source",
+        "result": "Records contain path, size, and sample hash. package.json contributes script names and entrypoint strings, not script bodies. Single-file dotfiles that pass local_path still omit body text. Denied names are skipped or refused.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "rea_bot%2Fworkbench.py%23route_target::rea_bot%2Fworkbench.py%23route_target::rea_bot::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "rea_bot/workbench.py#route_target",
+      "boundary": "rea_bot/workbench.py#route_target",
+      "subsystem": "rea_bot",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "rea_bot/workbench.py#route_target",
+    "boundary": "rea_bot/workbench.py#route_target",
+    "subsystem": "rea_bot",
+    "attack_class": "ATTACK-CLASSES.md#Injection",
+    "starting_paths": [
+      "rea_bot/workbench.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "No browser DOM, extension, service worker, or webview source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "No HTTP server, cookie session, OAuth, or mTLS. route_target does not open URLs."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "No IAM, container, or cloud control-plane manifests."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Core discipline",
+        "reason": "Python standard library only; no unsafe native parser or kernel interface."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+        "reason": "Single-operator run directory; source has no tenant or cross-account key."
+      },
+      {
+        "block": "AI-AND-LLM.md#Core discipline",
+        "reason": "route_target only classifies a string; it does not call a model or a tool."
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-files",
+    "reviewed_paths": [
+      "rea_bot/workbench.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-files",
+        "reviewed_paths": [
+          "rea_bot/workbench.py"
+        ],
+        "invariant": "URL and npm classification must not fetch, execute, or accept URL credentials.",
+        "method": "source",
+        "result": "route_target rejects non-https, userinfo, query, and fragment, and does not call urlopen or subprocess on those branches.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "scripts%2Finstall_local.py%23main::scripts%2Finstall_local.py%23main::scripts::DESKTOP-MOBILE-AND-LOCAL-IPC.md%23Install%2C%20update%2C%20and%20repair%20path%20trust",
+    "canonical_refs": {
+      "surface": "scripts/install_local.py#main",
+      "boundary": "scripts/install_local.py#main",
+      "subsystem": "scripts",
+      "attack_class": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Install, update, and repair path trust"
+    },
+    "surface": "scripts/install_local.py#main",
+    "boundary": "scripts/install_local.py#main",
+    "subsystem": "scripts",
+    "attack_class": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Install, update, and repair path trust",
+    "starting_paths": [
+      "scripts/install_local.py",
+      "mcp.json",
+      ".cursor-plugin/plugin.json"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Resource and file handling",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Install, update, and repair path trust",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "No browser DOM, extension, service worker, or webview source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "No HTTP server, cookie session, OAuth, or mTLS. route_target does not open URLs."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "No IAM, container, or cloud control-plane manifests."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Core discipline",
+        "reason": "Python standard library only; no unsafe native parser or kernel interface."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+        "reason": "Single-operator run directory; source has no tenant or cross-account key."
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-files",
+    "reviewed_paths": [
+      "scripts/install_local.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-files",
+        "reviewed_paths": [
+          "scripts/install_local.py"
+        ],
+        "invariant": "Install writes only after --apply and refuses an existing destination.",
+        "method": "source",
+        "result": "Default path prints the plan. --apply uses copytree and refuses when the destination exists. The copy is the same user and is not a privilege boundary.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "server%2Fmcp_server.py%23handle::server%2Fmcp_server.py%23call::server::AI-AND-LLM.md%23Tool-schema%20and%20dispatcher%20disagreement",
+    "canonical_refs": {
+      "surface": "server/mcp_server.py#handle",
+      "boundary": "server/mcp_server.py#call",
+      "subsystem": "server",
+      "attack_class": "AI-AND-LLM.md#Tool-schema and dispatcher disagreement"
+    },
+    "surface": "server/mcp_server.py#handle",
+    "boundary": "server/mcp_server.py#call",
+    "subsystem": "server",
+    "attack_class": "AI-AND-LLM.md#Tool-schema and dispatcher disagreement",
+    "starting_paths": [
+      "server/mcp_server.py",
+      "rea_bot/cli.py",
+      "rea_bot/runner.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "AI-AND-LLM.md#Core discipline",
+      "AI-AND-LLM.md#Tool-schema and dispatcher disagreement",
+      "AI-AND-LLM.md#Tool-argument injection into a downstream sink",
+      "AI-AND-LLM.md#Universal moves",
+      "AI-AND-LLM.md#Validation rules",
+      "PROTOCOLS-RPC-AND-MESSAGING.md#Core discipline",
+      "PROTOCOLS-RPC-AND-MESSAGING.md#Message boundary and canonicalization disagreement",
+      "PROTOCOLS-RPC-AND-MESSAGING.md#Universal moves",
+      "PROTOCOLS-RPC-AND-MESSAGING.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "No browser DOM, extension, service worker, or webview source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "No HTTP server, cookie session, OAuth, or mTLS. route_target does not open URLs."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "No IAM, container, or cloud control-plane manifests."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Core discipline",
+        "reason": "Python standard library only; no unsafe native parser or kernel interface."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+        "reason": "Single-operator run directory; source has no tenant or cross-account key."
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-engine",
+    "reviewed_paths": [
+      "server/mcp_server.py",
+      "rea_bot/api.py",
+      "rea_bot/runner.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-engine",
+        "reviewed_paths": [
+          "server/mcp_server.py",
+          "rea_bot/api.py",
+          "rea_bot/runner.py"
+        ],
+        "invariant": "Schema types and the handler must agree where a second principal would be affected.",
+        "method": "source",
+        "result": "handle checks keys and required names, not JSON types. timeout null becomes None and disables the deadline in the caller's own process. reconstruction may be a shlex string; subprocess shell stays false. No shared service.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "Reject non-number timeouts and non-array reconstruction at the MCP boundary, and cap timeout."
+    ]
+  },
+  {
+    "coverage_id": "server%2Fmcp_server.py%23serve::server%2Fmcp_server.py%23handle::server::PROTOCOLS-RPC-AND-MESSAGING.md%23Message%20boundary%20and%20canonicalization%20disagreement",
+    "canonical_refs": {
+      "surface": "server/mcp_server.py#serve",
+      "boundary": "server/mcp_server.py#handle",
+      "subsystem": "server",
+      "attack_class": "PROTOCOLS-RPC-AND-MESSAGING.md#Message boundary and canonicalization disagreement"
+    },
+    "surface": "server/mcp_server.py#serve",
+    "boundary": "server/mcp_server.py#handle",
+    "subsystem": "server",
+    "attack_class": "PROTOCOLS-RPC-AND-MESSAGING.md#Message boundary and canonicalization disagreement",
+    "starting_paths": [
+      "server/mcp_server.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "PROTOCOLS-RPC-AND-MESSAGING.md#Core discipline",
+      "PROTOCOLS-RPC-AND-MESSAGING.md#Message boundary and canonicalization disagreement",
+      "PROTOCOLS-RPC-AND-MESSAGING.md#Peer identity to application-principal confusion",
+      "PROTOCOLS-RPC-AND-MESSAGING.md#Universal moves",
+      "PROTOCOLS-RPC-AND-MESSAGING.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "No browser DOM, extension, service worker, or webview source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "No HTTP server, cookie session, OAuth, or mTLS. route_target does not open URLs."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "No IAM, container, or cloud control-plane manifests."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Core discipline",
+        "reason": "Python standard library only; no unsafe native parser or kernel interface."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+        "reason": "Single-operator run directory; source has no tenant or cross-account key."
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-engine",
+    "reviewed_paths": [
+      "server/mcp_server.py",
+      "rea_bot/workbench.py",
+      "mcp.json"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-engine",
+        "reviewed_paths": [
+          "server/mcp_server.py",
+          "rea_bot/workbench.py",
+          "mcp.json"
+        ],
+        "invariant": "Stdio framing is size-capped and has no remote peer.",
+        "method": "source",
+        "result": "serve rejects lines over 2 MiB before json.loads. mcp.json is a local stdio command with no socket.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "server%2Fmcp_server.py%23tools%2Fcall::rea_bot%2Frunner.py%23differential::rea_bot::AI-AND-LLM.md%23Action-confirmation%20and%20approval%20binding",
+    "canonical_refs": {
+      "surface": "server/mcp_server.py#tools/call",
+      "boundary": "rea_bot/runner.py#differential",
+      "subsystem": "rea_bot",
+      "attack_class": "AI-AND-LLM.md#Action-confirmation and approval binding"
+    },
+    "surface": "server/mcp_server.py#tools/call",
+    "boundary": "rea_bot/runner.py#differential",
+    "subsystem": "rea_bot",
+    "attack_class": "AI-AND-LLM.md#Action-confirmation and approval binding",
+    "starting_paths": [
+      "server/mcp_server.py",
+      "rea_bot/api.py",
+      "rea_bot/runner.py",
+      "skills/rebuild/SKILL.md"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Access control",
+    "selected_companion_blocks": [
+      "AI-AND-LLM.md#Core discipline",
+      "AI-AND-LLM.md#Action-confirmation and approval binding",
+      "AI-AND-LLM.md#Universal moves",
+      "AI-AND-LLM.md#Validation rules",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Pending-action and user-presence confusion",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "No browser DOM, extension, service worker, or webview source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "No HTTP server, cookie session, OAuth, or mTLS. route_target does not open URLs."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "No IAM, container, or cloud control-plane manifests."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Core discipline",
+        "reason": "Python standard library only; no unsafe native parser or kernel interface."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+        "reason": "Single-operator run directory; source has no tenant or cross-account key."
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-engine",
+    "reviewed_paths": [
+      "server/mcp_server.py",
+      "rea_bot/api.py",
+      "rea_bot/runner.py",
+      "README.md",
+      "skills/rebuild/SKILL.md"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-engine",
+        "reviewed_paths": [
+          "server/mcp_server.py",
+          "rea_bot/api.py",
+          "rea_bot/runner.py",
+          "README.md",
+          "skills/rebuild/SKILL.md"
+        ],
+        "invariant": "approve_original must match the reviewed entrypoint bytes that subprocess.run executes, or the mismatch must be same-principal authority.",
+        "method": "source",
+        "result": "differential compares approve_original to sha256_path(original_pin) and then runs a separately parsed original argv. The same tools/call supplies the hash, the pin path, and the command. Reconstruction argv executes with no pin by design. No stored approval from a second principal exists. The skill text that says to ask the user is a prompt. This restates the caller authority.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "Bind the pin path to the executed script path before subprocess.run, so a reviewed digest cannot describe a different argv."
+    ]
+  }
+]
