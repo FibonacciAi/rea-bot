@@ -79,6 +79,17 @@ class GhidraContract(unittest.TestCase):
         self.assertIn("left", text)
         self.assertNotIn("sub_10", text)
 
+    def test_sample_signature_skips_the_blank_line(self):
+        report = {"functions_detail": [{"address": "0x1000"}]}
+        code = "\nint add(int left, int right)\n\n{\n  return right + left;\n}\n"
+        result = {"imagebase": "0x0", "internal": 1, "external": 0, "functions": [
+            {"address": "0x1000", "name": "add", "external": False, "signature": "int add(int left, int right)"}],
+                  "decompiled": [{"address": "0x1000", "name": "add", "signature": "int add(int left, int right)",
+                                  "decompile_completed": True, "c": code, "calls": []}]}
+        ghidra_backend.merge(report, result, source_base=0)
+        self.assertEqual(report["ghidra"]["sample_signature"], "int add(int left, int right)")
+        self.assertTrue(report["ghidra"]["sample_markers"]["has_left"])
+
     def test_setup_plan_does_not_download(self):
         os.environ.pop("GHIDRA_INSTALL_DIR", None)
         os.environ["REA_BOT_GHIDRA_HOME"] = tempfile.mkdtemp()

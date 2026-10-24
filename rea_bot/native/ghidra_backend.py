@@ -386,8 +386,10 @@ def merge(report, result, source_base=0):
     lines = []
     signature = ""
     if sample:
-        signature = (sample.get("c") or "").splitlines()[0][:240] if sample.get("c") else sample.get("signature") or ""
-        lines = [line[:200] for line in (sample.get("c") or "").splitlines()[:30]]
+        raw_lines = (sample.get("c") or "").splitlines()
+        content = [line.strip() for line in raw_lines if line.strip() and not line.strip().startswith(("/*", "*", "//"))]
+        signature = content[0][:240] if content else (sample.get("signature") or "")
+        lines = [line[:200] for line in raw_lines if line.strip()][:30]
     report["ghidra_functions"] = functions
     report["ghidra_decompiled"] = decompiled
     report["ghidra"] = {"backend": "ghidra", "version": result.get("version") or PIN["version"],
