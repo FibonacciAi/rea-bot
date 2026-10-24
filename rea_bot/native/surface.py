@@ -44,9 +44,12 @@ def _crc(module):
             "polynomial": IEEE_POLY, "width": 4}
 
 
+def _stub_imports(module):
+    """Imports the harness can satisfy with wasmtime's default values. Tables are included; WASI is not."""
+    return [item for item in module.get("imports") or [] if item.get("kind") in {"func", "memory", "global", "table"}]
+
+
 def _numeric(module):
-    if any(item.get("kind") == "func" for item in module.get("imports") or []):
-        return []
     found = []
     for item in _funcs(module):
         params = item.get("params") or []
@@ -139,17 +142,32 @@ def _crc_harness(module_path, home, shape):
     ])
 
 
-def _numeric_harness(module_path, home, exports):
+def _numeric_harness(module_path, home, exports, imports):
     table = {item["name"]: {"params": item["params"], "results": item["results"]} for item in exports}
     multi = len(exports) > 1
+    instantiate = [
+        "    engine = Engine()",
+        "    module = Module.from_file(engine, WASM)",
+        "    store = Store(engine)",
+    ]
+    if imports:
+        instantiate += [
+            "    linker = Linker(engine)",
+            "    # Default values: i32/i64 0, f32/f64 0.0, null refs. Not a WASI host.",
+            "    linker.define_unknown_imports_as_default_values(store, module)",
+            "    instance = linker.instantiate(store, module)",
+        ]
+    else:
+        instantiate += ["    instance = Instance(store, module, [])"]
     return "\n".join([
         "import json, sys",
         "sys.path.insert(0, %s)" % json.dumps(str(home)),
-        "from wasmtime import Engine, Store, Module, Instance",
+        "from wasmtime import Engine, Store, Module, Instance, Linker",
         "",
         "WASM = %s" % json.dumps(str(module_path)),
         "EXPORTS = %s" % json.dumps(table),
         "MULTI = %s" % ("True" if multi else "False"),
+        "IMPORTS = %s" % json.dumps(imports),
         "",
         "def main():",
         "    data = json.load(sys.stdin)",
@@ -157,10 +175,7 @@ def _numeric_harness(module_path, home, exports):
         "    if name not in EXPORTS:",
         "        raise SystemExit('unknown export')",
         "    args = data.get('args') or []",
-        "    engine = Engine()",
-        "    module = Module.from_file(engine, WASM)",
-        "    store = Store(engine)",
-        "    instance = Instance(store, module, [])",
+        *instantiate,
         "    result = instance.exports(store)[name](store, *args)",
         "    json.dump(result, sys.stdout)",
         "",
@@ -229,14 +244,19 @@ def infer(report, native_home):
             case["feature_id"] = feature_id
             case.pop("export", None)
         names = ", ".join(item["name"] for item in exports)
+        imports = _stub_imports(module)
+        behavior = "Direct calls of %s. Arguments are the numeric wasm parameters. No pointer exports are called." % names
+        if imports:
+            behavior += " Imports are instantiated as wasmtime default values (integers 0, floats 0.0, null references), not as WASI."
         feature = {"id": feature_id, "name": "Numeric wasm exports",
                    "interface": "JSON {args} on stdin, the export's JSON result on stdout."
                    + (" Pass export when more than one function is covered." if len(exports) > 1 else ""),
-                   "behavior": "Direct calls of %s. Arguments are the numeric wasm parameters. No pointer exports are called." % names,
+                   "behavior": behavior,
                    "test": "diff the generated harness against a rebuild of the same numeric function on the generated cases.",
                    "state": "source-derived", "evidence_ids": ["native:wasm-surface"]}
         return {"callable": "wasm-numeric", "module": module.get("path"), "feature": feature, "cases": cases,
-                "harness": _numeric_harness(module["path"], native_home, exports),
+                "imports": imports,
+                "harness": _numeric_harness(module["path"], native_home, exports, imports),
                 "note": "Numeric exports only. The harness is not run here."}
 
     described = []

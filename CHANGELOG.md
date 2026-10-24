@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.0
+Deeper native analysis, still opt-in. The core install stays dependency-free. REA stays an optional backend.
+- CFG recovery covers x86-64, x86-32, arm64 and arm32. x86-64 PLT stubs, arm64 PLT stubs and PE import-address slots are named on the call graph. Mach-O import calls stay unnamed.
+- A structural lifter writes C-like pseudocode (returns, calls, conditional branches) for up to 50 functions. It is not a decompiler of Ghidra's depth. DWARF, when `.debug_info` is present and at most 6 MiB, names parameters and the return type on the signature. pyelftools 0.33 is the pinned wheel.
+- A PE CodeView record is reported by basename. A portable PDB or classic MSF PDB beside the PE yields document basenames and local names, or MSF type names. The PDB is not executed.
+- Wasm modules that import functions are instantiated in the harness with wasmtime's default values (integers 0, floats 0.0, null references). That is not a WASI host. The harness still runs only inside `diff` after digest approval. Analyze does not instantiate.
+- .NET metadata row counts are reported for every non-empty table. Up to 120 method bodies are lifted to C#-like stack text. A sibling `.pdb` is parsed when it is a portable PDB or MSF PDB. The assembly is not executed.
+- Archives also unpack CAB (stored and MSZIP), MSI cabinet streams (olefile 0.47) and NSIS (raw deflate or LZMA). Quantum and LZX cabinets are refused. Installer members are not executed.
+- An engine session forwards `GHIDRA_INSTALL_DIR`, `JAVA_HOME`, `REA_WABT_BIN_DIRECTORY`, `REA_WAKARU_COMMAND` and the related locator variables when the operator has already set them. Those programs are not downloaded.
+
 ## 0.5.0
 Lostwax native analysis engine. The core install stays dependency-free. REA remains an optional backend.
 - `native setup` plans, then with `--apply --approve-source lostwax-native@1` installs pinned wheels (capstone, LIEF, wasmtime, dnfile, pefile) by SHA-256 into the native home. No setup scripts and no system install. Python >= 3.12 for those wheels.

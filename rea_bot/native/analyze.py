@@ -41,7 +41,20 @@ def _sniff(path):
     if head.startswith(b"\x7fELF"):
         return "elf"
     if head.startswith(b"MZ"):
+        try:
+            size = path.stat().st_size
+            with path.open("rb") as handle:
+                handle.seek(max(0, size - 1_000_000))
+                tail = handle.read()
+        except OSError:
+            tail = b""
+        if b"NullsoftInst" in tail and b"\xef\xbe\xad\xde" in tail:
+            return "archive"
         return "pe"
+    if head[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" or name.endswith(".msi"):
+        return "archive"
+    if head[:4] == b"MSCF" or name.endswith(".cab"):
+        return "archive"
     if head[:4] in {b"\xfe\xed\xfa\xcf", b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xce", b"\xce\xfa\xed\xfe",
                     b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"}:
         return "macho"
@@ -282,7 +295,7 @@ def analyze_run(run_or_id):
         harness_path.write_text(surface["harness"])
         cases_path.write_text(json.dumps(surface["cases"], indent=2) + "\n")
     summary = {"run": run.id, "target": str(target), "reports": [_slim(item) for item in reports],
-               "surface": {k: surface[k] for k in ("callable", "module", "note") if k in surface},
+               "surface": {k: surface[k] for k in ("callable", "module", "note", "imports") if k in surface},
                "feature_id": (surface.get("feature") or {}).get("id"),
                "cases": len(surface.get("cases") or []),
                "evidence_ids": [row["id"] for row in evidence],

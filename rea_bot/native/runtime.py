@@ -112,9 +112,10 @@ def activate():
 def imports():
     activate()
     found = {}
-    for name in ("capstone", "lief", "wasmtime", "dnfile", "pefile"):
+    for name, module in (("capstone", "capstone"), ("lief", "lief"), ("wasmtime", "wasmtime"),
+                         ("dnfile", "dnfile"), ("pefile", "pefile"), ("pyelftools", "elftools"), ("olefile", "olefile")):
         try:
-            __import__(name)
+            __import__(module)
             found[name] = True
         except Exception:
             found[name] = False

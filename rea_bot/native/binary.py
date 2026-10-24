@@ -1,13 +1,17 @@
 """ELF, PE and Mach-O analysis: sections, symbols, imports, exports, disassembly, CFG, call graph, xrefs.
 
-Disassembly and control flow are native (Capstone). Function bounds come from .eh_frame, the PE
-exception directory, Mach-O function starts, symbols, and direct call targets. Nothing is executed.
+Disassembly and control flow are native (Capstone) for x86-64, x86-32, arm64 and arm32.
+Function bounds come from .eh_frame, the PE exception directory, Mach-O function starts,
+symbols, and direct call targets. DWARF and PDB records are read when they are present.
+Nothing is executed.
 """
 import struct
 import time
 
-from . import ehframe
+from . import dwarf, ehframe, lift, pdb
 from .runtime import activate
+
+_CFG_ARCH = {"x86-64", "arm64", "x86", "arm"}
 
 MAX_FUNCTIONS = 4000
 MAX_INSNS = 350_000
@@ -108,8 +112,12 @@ def _symbols(binary):
         for sym in items:
             name = str(getattr(sym, "name", "") or "")
             value = _va(binary, getattr(sym, "value", 0) or getattr(sym, "address", 0) or 0)
-            if name and value:
-                names.setdefault(value, name)
+            if not name or not value:
+                continue
+            current = names.get(value)
+            # Mapping symbols ($a, $d, $x, $t) are less useful than the real name.
+            if current is None or (current.startswith("$") and not name.startswith("$")):
+                names[value] = name
     return names
 
 
@@ -218,8 +226,7 @@ def _macho_starts(binary):
         return []
 
 
-def _plt(binary, sections):
-    """Map PLT stub addresses to import names via RIP-relative jumps into the GOT."""
+def _got_names(binary):
     got = {}
     try:
         rels = list(getattr(binary, "pltgot_relocations", []) or [])
@@ -230,6 +237,12 @@ def _plt(binary, sections):
         name = str(getattr(sym, "name", "") or "") if sym is not None else ""
         if name:
             got[_va(binary, rel.address)] = name
+    return got
+
+
+def _plt(binary, sections):
+    """Map x86-64 PLT stub addresses to import names via RIP-relative jumps into the GOT."""
+    got = _got_names(binary)
     if not got:
         return {}
     from capstone import CS_ARCH_X86, CS_MODE_64, CS_OP_MEM, Cs
@@ -258,6 +271,68 @@ def _plt(binary, sections):
             elif stub is None:
                 stub = insn.address
     return mapping
+
+
+def _plt_arm64(binary, sections):
+    """Map AArch64 PLT stubs (adrp; ldr; add; br) to import names."""
+    got = _got_names(binary)
+    if not got:
+        return {}
+    from capstone import CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN, Cs
+    md = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
+    md.detail = True
+    mapping = {}
+    for sec in sections:
+        if sec["name"] not in {".plt", ".plt.sec", ".plt.got"} or not sec["raw"]:
+            continue
+        insns = list(md.disasm(sec["raw"], sec["va"]))
+        for index, insn in enumerate(insns[:-1]):
+            if insn.mnemonic != "adrp" or len(insn.operands) < 2 or insn.operands[1].type != 2:
+                continue
+            nxt = insns[index + 1]
+            if not nxt.mnemonic.startswith("ldr") or len(nxt.operands) < 2 or nxt.operands[1].type != 3:
+                continue
+            slot = int(insn.operands[1].imm) + int(nxt.operands[1].mem.disp)
+            name = got.get(slot)
+            if name:
+                mapping[insn.address] = name
+    return mapping
+
+
+def _pe_iat(binary):
+    """Map PE IAT slot addresses to import names. LIEF reports the slot as an RVA."""
+    base = _imagebase(binary)
+    mapping = {}
+    try:
+        libraries = list(getattr(binary, "imports", []) or [])
+    except Exception:
+        return {}
+    for lib in libraries:
+        try:
+            entries = list(lib.entries)
+        except Exception:
+            continue
+        for entry in entries:
+            name = str(getattr(entry, "name", "") or "")
+            if not name and getattr(entry, "is_ordinal", False):
+                name = "ord_%s" % getattr(entry, "ordinal", "")
+            slot = int(getattr(entry, "iat_address", 0) or 0)
+            if base and 0 < slot < base:
+                slot += base
+            if name and slot:
+                mapping[slot] = name
+    return mapping
+
+
+def _import_map(binary, sections, arch):
+    fmt = str(binary.format)
+    if "ELF" in fmt and arch == "x86-64":
+        return _plt(binary, sections)
+    if "ELF" in fmt and arch == "arm64":
+        return _plt_arm64(binary, sections)
+    if "PE" in fmt:
+        return _pe_iat(binary)
+    return {}
 
 
 _SKIP_STRINGS = {".dynstr", ".strtab", ".shstrtab", ".comment", ".interp", ".gnu.hash",
@@ -321,6 +396,10 @@ def _arg_index(arch, name):
             n = int(name[1:])
             if 0 <= n <= 7:
                 return n
+    if arch == "arm" and name and name[0] == "r" and name[1:].isdigit():
+        n = int(name[1:])
+        if 0 <= n <= 3:
+            return n
     return None
 
 
@@ -329,6 +408,10 @@ def _ret_reg(name, arch):
         return name in {"rax", "eax", "ax", "al", "xmm0"}
     if arch == "arm64":
         return name in {"x0", "w0", "d0", "s0"}
+    if arch == "arm":
+        return name == "r0"
+    if arch == "x86":
+        return name in {"eax", "ax", "al"}
     return False
 
 
@@ -364,12 +447,24 @@ def _touch(md, insn, arch):
             reads = [r for r in regs[1:] if r]
             if regs and regs[0] and mnem not in {"mov", "movz", "movn", "movk"}:
                 reads.insert(0, regs[0])
+    elif arch == "arm":
+        if mnem in {"cmp", "cmn", "tst", "teq"} or mnem.startswith("b") or mnem in {"str", "strb", "strh", "stm", "push", "swi"}:
+            reads = [r for r in regs if r]
+        else:
+            if regs and regs[0]:
+                writes.append(regs[0])
+            reads = [r for r in regs[1:] if r]
+            if regs and regs[0] and mnem not in {"mov", "movw", "movt", "ldr", "ldrb", "ldrh"}:
+                reads.insert(0, regs[0])
     return reads, writes
 
 
 def _signature(md, insns, arch):
-    if arch not in {"x86-64", "arm64"}:
-        return {"args": [], "returns": "unknown", "state": "unknown", "note": "Signature inference is implemented for x86-64 and arm64."}
+    if arch == "x86":
+        return {"args": [], "returns": "unknown", "state": "unknown", "convention": "cdecl",
+                "note": "x86-32 cdecl arguments are passed on the stack. Names come from DWARF when it is present."}
+    if arch not in {"x86-64", "arm64", "arm"}:
+        return {"args": [], "returns": "unknown", "state": "unknown", "note": "No ABI signature for this architecture."}
     used = set()
     written = set()
     returns = False
@@ -389,8 +484,26 @@ def _signature(md, insns, arch):
     if used:
         for i in range(max(used) + 1):
             args.append("arg%d" % i if i in used else "arg%d?" % i)
+    convention = {"x86-64": "sysv", "arm64": "aapcs64", "arm": "aapcs"}.get(arch, "")
     return {"args": args, "nargs": len(args), "returns": "gpr0" if returns else "unknown", "state": "inferred",
-            "convention": "sysv" if arch == "x86-64" else "aapcs64"}
+            "convention": convention}
+
+
+def _call_mem(insn, arch):
+    """Absolute address of a memory operand used by an indirect call, when it is computable."""
+    if arch not in {"x86-64", "x86"}:
+        return None
+    from capstone import CS_OP_MEM
+    if arch == "x86-64":
+        from capstone.x86_const import X86_REG_RIP
+        for op in insn.operands:
+            if op.type == CS_OP_MEM and op.mem.base == X86_REG_RIP:
+                return insn.address + insn.size + int(op.mem.disp)
+    else:
+        for op in insn.operands:
+            if op.type == CS_OP_MEM and not op.mem.base and not op.mem.index:
+                return int(op.mem.disp) & 0xFFFFFFFF
+    return None
 
 
 def _flow(md, insns, arch, start, end):
@@ -410,12 +523,17 @@ def _flow(md, insns, arch, start, end):
     for insn in insns:
         mnem = insn.mnemonic
         nxt = insn.address + insn.size
-        is_call = mnem in {"call", "bl", "blr"}
-        is_ret = mnem in {"ret", "retn", "retf"}
-        is_jump = (mnem == "jmp" or mnem in {"b", "br"} or mnem.startswith("b.") or mnem in
+        arm_branch = mnem in {"beq", "bne", "bcs", "bhs", "bcc", "blo", "bmi", "bpl", "bvs", "bvc", "bhi", "bls",
+                              "bge", "blt", "bgt", "ble", "bal", "cbz", "cbnz", "tbz", "tbnz"}
+        is_call = mnem in {"call", "bl", "blr", "blx"}
+        is_ret = mnem in {"ret", "retn", "retf"} or (mnem == "bx" and "lr" in insn.op_str) or (
+            mnem in {"pop", "ldm", "ldmia"} and "pc" in insn.op_str)
+        is_jump = (mnem == "jmp" or mnem in {"b", "br", "bx"} or mnem.startswith("b.") or arm_branch or mnem in
                    {"je", "jne", "ja", "jae", "jb", "jbe", "jg", "jge", "jl", "jle", "js", "jns", "jo", "jno", "jp", "jnp",
-                    "jcxz", "jecxz", "jrcxz", "cbz", "cbnz", "tbz", "tbnz"})
+                    "jcxz", "jecxz", "jrcxz"})
         target = imm_target(insn)
+        if is_call and target is None:
+            target = _call_mem(insn, arch)
         if is_call:
             if mnem == "blr" or (mnem == "call" and target is None):
                 indirect += 1
@@ -458,9 +576,10 @@ def _flow(md, insns, arch, start, end):
         last = block["last"]
         nxt = last.address + last.size
         mnem = last.mnemonic
-        terminal = mnem in {"ret", "retn", "retf", "jmp", "b", "br"} or mnem.startswith("b.") or mnem in {
+        terminal = mnem in {"ret", "retn", "retf", "jmp", "b", "br", "bx"} or mnem.startswith("b.") or mnem in {
             "je", "jne", "ja", "jae", "jb", "jbe", "jg", "jge", "jl", "jle", "js", "jns", "jo", "jno", "jp", "jnp",
-            "cbz", "cbnz", "tbz", "tbnz"}
+            "beq", "bne", "bcs", "bcc", "bhs", "blo", "bmi", "bpl", "bvs", "bvc", "bhi", "bls", "bge", "blt", "bgt", "ble",
+            "cbz", "cbnz", "tbz", "tbnz"} or (mnem in {"pop", "ldm", "ldmia"} and "pc" in last.op_str)
         if not terminal and i + 1 < len(blocks) and blocks[i + 1]["address"] == nxt:
             edges.append((last.address, nxt, "fall"))
     return {"blocks": len(blocks), "edges": len(edges), "calls": direct_calls, "indirect": indirect}
@@ -530,7 +649,7 @@ def _lookup_string(strings, addr):
     return None
 
 
-def _disassemble(md, arch, func, sections, plt, strings, names, budget):
+def _disassemble(md, arch, func, sections, plt, strings, names, budget, lift_left):
     raw = _bytes_at(sections, func["address"], func["size"])
     if not raw:
         func.update({"instructions": 0, "blocks": 0, "cfg_edges": 0, "callees": [], "callee_count": 0,
@@ -558,6 +677,8 @@ def _disassemble(md, arch, func, sections, plt, strings, names, budget):
     extra = _arm_pages(md, insns) if arch == "arm64" else {}
     for insn in insns:
         for addr in list(_mem_targets(insn, arch)) + extra.get(insn.address, []):
+            if addr in plt:
+                continue
             text = _lookup_string(strings, addr)
             if text is not None:
                 string_xrefs.append({"from": _hex(insn.address), "address": _hex(addr), "text": text[:80]})
@@ -565,11 +686,16 @@ def _disassemble(md, arch, func, sections, plt, strings, names, budget):
                 constant_xrefs.append({"from": _hex(insn.address), "address": _hex(addr)})
     sig = _signature(md, insns, arch)
     asm = ["%s: %s %s" % (_hex(insn.address), insn.mnemonic, insn.op_str) for insn in insns[:12]]
+    pseudo = []
+    if lift_left[0] > 0 and insns:
+        pseudo = lift.lift(md, insns, arch)
+        if pseudo:
+            lift_left[0] -= 1
     func.update({"instructions": len(insns), "blocks": flow["blocks"], "cfg_edges": flow["edges"],
                  "callees": callees[:16], "callee_count": len(callees), "indirect_calls": flow["indirect"],
                  "string_xrefs": string_xrefs[:8], "string_xref_count": len(string_xrefs),
                  "constant_xrefs": constant_xrefs[:8], "constant_xref_count": len(constant_xrefs),
-                 "signature": sig, "assembly": asm, "calls": flow["calls"]})
+                 "signature": sig, "assembly": asm, "calls": flow["calls"], "pseudocode": pseudo})
     return len(insns)
 
 
@@ -600,9 +726,9 @@ def analyze_binary(path):
     binaries = [parsed]
     if type(parsed).__name__ == "FatBinary":
         binaries = [parsed.at(i) for i in range(len(parsed))]
-    reports = [_one(b) for b in binaries[:3]]
+    reports = [_one(b, path) for b in binaries[:3]]
     # Prefer a slice we can actually disassemble.
-    reports.sort(key=lambda r: (r["arch"] not in {"x86-64", "arm64"}, -r["functions"]["count"]))
+    reports.sort(key=lambda r: (r["arch"] not in _CFG_ARCH, -r["functions"]["count"]))
     primary = reports[0]
     primary["slices"] = len(binaries)
     primary["other_slices"] = [{"arch": r["arch"], "format": r["format"], "functions": r["functions"]["count"]} for r in reports[1:]]
@@ -611,7 +737,21 @@ def analyze_binary(path):
     return primary
 
 
-def _one(binary):
+def _apply_dwarf(func, record):
+    params = record.get("params") or []
+    if not params and not record.get("return"):
+        return
+    args = []
+    for param in params:
+        label = param.get("name") or "arg"
+        if param.get("type"):
+            label = "%s %s" % (param["type"], label)
+        args.append(label.strip())
+    func["signature"] = {"args": args, "nargs": len(args), "returns": record.get("return") or "unknown",
+                         "state": "observed-static", "source": "dwarf", "name": record.get("name") or ""}
+
+
+def _one(binary, path=None):
     arch = _arch(binary)
     sections = _sections(binary)
     names = _symbols(binary)
@@ -655,17 +795,18 @@ def _one(binary):
     strings = _strings(sections)
     strings.sort()
     plt = {}
-    md = _cs(arch) if arch in {"x86-64", "arm64", "x86", "arm"} else None
+    md = _cs(arch) if arch in _CFG_ARCH else None
     limitations = []
-    if arch not in {"x86-64", "arm64"}:
-        limitations.append("Full CFG and signature recovery are implemented for x86-64 and arm64. This file is %s; structure, symbols and strings are still reported." % arch)
-    if md is not None and arch == "x86-64":
+    if arch not in _CFG_ARCH:
+        limitations.append("CFG recovery covers x86-64, x86-32, arm64 and arm32. This file is %s; structure, symbols and strings are still reported." % arch)
+    if md is not None and arch in {"x86-64", "arm64", "x86"}:
         try:
-            plt = _plt(binary, sections)
+            plt = _import_map(binary, sections, arch)
         except Exception as err:
             plt = {}
-            limitations.append("PLT names were not recovered: " + str(err)[:180])
+            limitations.append("Import names were not recovered: " + str(err)[:180])
     budget = [0]
+    lift_left = [50]
     call_edges = 0
     import_edges = 0
     indirect = 0
@@ -676,12 +817,12 @@ def _one(binary):
     disasm_funcs = 0
     entry_asm = []
     discovered = []
-    if md is not None and arch in {"x86-64", "arm64"}:
+    if md is not None and arch in _CFG_ARCH:
         for func in kept:
             if budget[0] >= MAX_INSNS:
                 limitations.append("Instruction budget reached; later functions were not disassembled.")
                 break
-            _disassemble(md, arch, func, sections, plt, strings, names, budget)
+            _disassemble(md, arch, func, sections, plt, strings, names, budget, lift_left)
             disasm_funcs += 1
             blocks += func["blocks"]
             cfg_edges += func["cfg_edges"]
@@ -714,12 +855,50 @@ def _one(binary):
             if any(f["address"] <= addr < f["address"] + f["size"] for f in kept):
                 continue
             func = {"address": addr, "size": 256, "origin": "call-target", "name": names.get(addr, ""), "size_approximate": True}
-            _disassemble(md, arch, func, sections, plt, strings, names, budget)
+            _disassemble(md, arch, func, sections, plt, strings, names, budget, lift_left)
             kept.append(func)
             known.add(addr)
             disasm_funcs += 1
             blocks += func["blocks"]
             cfg_edges += func["cfg_edges"]
+    dwarf_report = {"subprograms": 0, "with_parameters": 0}
+    if path and "ELF" in str(binary.format):
+        debug = next((sec for sec in sections if sec["name"] == ".debug_info"), None)
+        if debug and debug["size"] > 6_000_000:
+            limitations.append("DWARF .debug_info is above the 6 MiB recovery cap.")
+        else:
+            try:
+                found = dwarf.recover(path)
+            except Exception as err:
+                found = None
+                limitations.append("DWARF was not recovered: " + str(err)[:160])
+            if found and found.get("available") is False:
+                limitations.append("DWARF types need the pinned pyelftools wheel from native setup.")
+            elif found:
+                dwarf_report = {"subprograms": found.get("subprograms", 0), "with_parameters": found.get("with_parameters", 0)}
+                for func in kept:
+                    record = found.get("by_address", {}).get(func["address"])
+                    if record:
+                        _apply_dwarf(func, record)
+                        if record.get("name") and not func.get("name"):
+                            func["name"] = record["name"]
+    codeview = None
+    pdb_report = None
+    if "PE" in str(binary.format):
+        try:
+            codeview = pdb.codeview(binary)
+        except Exception:
+            codeview = None
+        if codeview and not codeview.get("file"):
+            limitations.append("A CodeView record was present without a PDB file name.")
+        sibling = pdb.locate(path, codeview) if path else None
+        if codeview and sibling is None:
+            limitations.append("CodeView names %s, and that PDB is not beside the PE. Types were not recovered." % (codeview.get("file") or "a PDB"))
+        elif sibling is not None:
+            try:
+                pdb_report = pdb.parse(sibling)
+            except Exception as err:
+                limitations.append("The PDB next to this PE was not parsed: " + str(err)[:160])
     public = []
     for func in kept:
         name = func.get("name") or names.get(func["address"]) or ("entry" if func["address"] == entry else "sub_%x" % func["address"])
@@ -728,10 +907,16 @@ def _one(binary):
                 "signature": func.get("signature"), "callees": [
                     {"kind": c["kind"], "name": c.get("name") or "", "address": c.get("address")} for c in func.get("callees", [])],
                 "string_xrefs": func.get("string_xrefs", []), "constant_xrefs": func.get("constant_xrefs", [])}
+        if func.get("pseudocode"):
+            item["pseudocode"] = func["pseudocode"]
         if func.get("size_approximate"):
             item["size_approximate"] = True
         public.append(item)
     named = sum(1 for f in public if not f["name"].startswith("sub_"))
+    lifted = [item for item in public if item.get("pseudocode")]
+    branched = [item for item in lifted if any(line.startswith("if (") for line in item["pseudocode"])]
+    control = [item for item in lifted if any(line.startswith("if (") or line.startswith("goto ") for line in item["pseudocode"])]
+    sample = (branched or control or lifted or [None])[0]
     return {"kind": "native-binary", "format": str(binary.format).split(".")[-1], "arch": arch,
             "imagebase": _hex(_imagebase(binary)), "entrypoint": _hex(entry) if entry else None, "entry_assembly": entry_asm,
             "sections": [{"name": s["name"], "va": _hex(s["va"]), "size": s["size"], "executable": s["executable"]} for s in sections],
@@ -743,9 +928,14 @@ def _one(binary):
             "call_graph": {"edges": call_edges, "import_edges": import_edges, "indirect_calls": indirect},
             "strings": {"count": len(strings), "samples": _string_samples(strings)},
             "xrefs": {"strings": string_xrefs, "constants": constant_xrefs},
+            "decompiler": {"lifted": len(lifted), "with_control_flow": len(control),
+                           "sample_name": sample["name"] if sample else "",
+                           "sample": sample["pseudocode"] if sample else []},
+            "dwarf": dwarf_report, "codeview": codeview, "pdb": pdb_report,
             "instructions": budget[0],
             "functions_detail": public,
             "limitations": limitations + [
-                "Function signatures are inferred from the ABI registers read before the first call. They are not DWARF types.",
+                "C-like pseudocode is a structural lift of registers, stack slots and branches. It is not a decompiler of Ghidra's depth.",
+                "Register signatures are inferred unless DWARF names them. x86-32 cdecl arguments stay on the stack.",
                 "The file was not executed.",
             ]}
