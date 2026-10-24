@@ -2,7 +2,8 @@
 
 Disassembly and control flow are native (Capstone) for x86-64, x86-32, arm64 and arm32.
 Function bounds come from .eh_frame, the PE exception directory, Mach-O function starts,
-symbols, and direct call targets. DWARF and PDB records are read when they are present.
+symbols, and direct call targets. Import stubs are named for ELF, PE and Mach-O.
+DWARF parameter names are written into the lifted body. PDB records are read when present.
 Nothing is executed.
 """
 import struct
@@ -324,8 +325,81 @@ def _pe_iat(binary):
     return mapping
 
 
+def _macho_slots(binary):
+    """Map Mach-O bind addresses (GOT slots) to import names. Names are kept as LIEF reports them."""
+    slots = {}
+    try:
+        bindings = list(getattr(binary, "bindings", []) or [])
+    except Exception:
+        return {}
+    for item in bindings:
+        try:
+            symbol = item.symbol if getattr(item, "has_symbol", True) else None
+        except Exception:
+            symbol = getattr(item, "symbol", None)
+        name = str(getattr(symbol, "name", "") or "") if symbol is not None else ""
+        addr = int(getattr(item, "address", 0) or 0)
+        if name and addr and addr not in slots:
+            slots[addr] = name
+    return slots
+
+
+def _macho_arm64(sections, slots):
+    """Map AArch64 Mach-O stubs (adrp; ldr; br) onto bind slots. The stub address is the adrp."""
+    if not slots:
+        return {}
+    from capstone import CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN, Cs
+    md = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
+    md.detail = True
+    mapping = {}
+    for sec in sections:
+        if sec["name"] not in {"__stubs", "__symbol_stub1"} or not sec["raw"]:
+            continue
+        insns = list(md.disasm(sec["raw"], sec["va"]))
+        for index, insn in enumerate(insns[:-1]):
+            if insn.mnemonic != "adrp" or len(insn.operands) < 2 or insn.operands[1].type != 2:
+                continue
+            nxt = insns[index + 1]
+            if not nxt.mnemonic.startswith("ldr") or len(nxt.operands) < 2 or nxt.operands[1].type != 3:
+                continue
+            slot = int(insn.operands[1].imm) + int(nxt.operands[1].mem.disp)
+            name = slots.get(slot)
+            if name:
+                mapping[insn.address] = name
+    return mapping
+
+
+def _macho_x64(sections, slots):
+    """Map x86-64 Mach-O stubs (jmp qword ptr [rip+disp]) onto bind slots."""
+    if not slots:
+        return {}
+    from capstone import CS_ARCH_X86, CS_MODE_64, CS_OP_MEM, Cs
+    from capstone.x86_const import X86_REG_RIP
+    md = Cs(CS_ARCH_X86, CS_MODE_64)
+    md.detail = True
+    mapping = {}
+    for sec in sections:
+        if sec["name"] not in {"__stubs", "__symbol_stub1"} or not sec["raw"]:
+            continue
+        for insn in md.disasm(sec["raw"], sec["va"]):
+            if insn.mnemonic != "jmp":
+                continue
+            mem = None
+            for op in insn.operands:
+                if op.type == CS_OP_MEM and op.mem.base == X86_REG_RIP:
+                    mem = insn.address + insn.size + op.mem.disp
+            name = slots.get(mem) if mem is not None else None
+            if name:
+                mapping[insn.address] = name
+    return mapping
+
+
 def _import_map(binary, sections, arch):
     fmt = str(binary.format)
+    if "MACHO" in fmt and arch == "arm64":
+        return _macho_arm64(sections, _macho_slots(binary))
+    if "MACHO" in fmt and arch == "x86-64":
+        return _macho_x64(sections, _macho_slots(binary))
     if "ELF" in fmt and arch == "x86-64":
         return _plt(binary, sections)
     if "ELF" in fmt and arch == "arm64":
@@ -653,7 +727,7 @@ def _disassemble(md, arch, func, sections, plt, strings, names, budget, lift_lef
     raw = _bytes_at(sections, func["address"], func["size"])
     if not raw:
         func.update({"instructions": 0, "blocks": 0, "cfg_edges": 0, "callees": [], "callee_count": 0,
-                     "indirect_calls": 0, "string_xrefs": [], "string_xref_count": 0,
+                     "import_count": 0, "indirect_calls": 0, "string_xrefs": [], "string_xref_count": 0,
                      "constant_xrefs": [], "constant_xref_count": 0, "assembly": [], "signature": None})
         return 0
     insns = []
@@ -692,7 +766,9 @@ def _disassemble(md, arch, func, sections, plt, strings, names, budget, lift_lef
         if pseudo:
             lift_left[0] -= 1
     func.update({"instructions": len(insns), "blocks": flow["blocks"], "cfg_edges": flow["edges"],
-                 "callees": callees[:16], "callee_count": len(callees), "indirect_calls": flow["indirect"],
+                 "callees": callees[:16], "callee_count": len(callees),
+                 "import_count": sum(1 for item in callees if item["kind"] == "import"),
+                 "indirect_calls": flow["indirect"],
                  "string_xrefs": string_xrefs[:8], "string_xref_count": len(string_xrefs),
                  "constant_xrefs": constant_xrefs[:8], "constant_xref_count": len(constant_xrefs),
                  "signature": sig, "assembly": asm, "calls": flow["calls"], "pseudocode": pseudo})
@@ -737,6 +813,27 @@ def analyze_binary(path):
     return primary
 
 
+def _rewrite_dwarf_body(func):
+    """Replace lifter argN tokens with DWARF parameter names. arg10 is replaced before arg1."""
+    import re
+    sig = func.get("signature") or {}
+    if sig.get("source") != "dwarf":
+        return
+    lines = func.get("pseudocode") or []
+    if not lines:
+        return
+    pairs = []
+    for index, arg in enumerate(sig.get("args") or []):
+        token = str(arg).split()[-1]
+        if token == "arg%d" % index or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token):
+            continue
+        pairs.append((index, token))
+    text = "\n".join(lines)
+    for index, token in sorted(pairs, key=lambda item: -item[0]):
+        text = re.sub(r"\barg%d\b" % index, token, text)
+    func["pseudocode"] = text.split("\n")
+
+
 def _apply_dwarf(func, record):
     params = record.get("params") or []
     if not params and not record.get("return"):
@@ -749,6 +846,7 @@ def _apply_dwarf(func, record):
         args.append(label.strip())
     func["signature"] = {"args": args, "nargs": len(args), "returns": record.get("return") or "unknown",
                          "state": "observed-static", "source": "dwarf", "name": record.get("name") or ""}
+    _rewrite_dwarf_body(func)
 
 
 def _one(binary, path=None):
@@ -829,11 +927,10 @@ def _one(binary, path=None):
             indirect += func["indirect_calls"]
             string_xrefs += func["string_xref_count"]
             constant_xrefs += func["constant_xref_count"]
+            call_edges += func.get("callee_count", 0)
+            import_edges += func.get("import_count", 0)
             for callee in func["callees"]:
-                call_edges += 1
-                if callee["kind"] == "import":
-                    import_edges += 1
-                elif callee["kind"] == "direct":
+                if callee["kind"] == "direct" and callee.get("address"):
                     addr = int(callee["address"], 16)
                     if addr not in funcs and len(discovered) < MAX_NEW_FUNCS:
                         discovered.append(addr)
@@ -861,6 +958,8 @@ def _one(binary, path=None):
             disasm_funcs += 1
             blocks += func["blocks"]
             cfg_edges += func["cfg_edges"]
+            call_edges += func.get("callee_count", 0)
+            import_edges += func.get("import_count", 0)
     dwarf_report = {"subprograms": 0, "with_parameters": 0}
     if path and "ELF" in str(binary.format):
         debug = next((sec for sec in sections if sec["name"] == ".debug_info"), None)
@@ -935,7 +1034,7 @@ def _one(binary, path=None):
             "instructions": budget[0],
             "functions_detail": public,
             "limitations": limitations + [
-                "C-like pseudocode is a structural lift of registers, stack slots and branches. It is not a decompiler of Ghidra's depth.",
+                "C-like pseudocode is a structural lift of registers, stack slots and branches. DWARF parameter names are substituted into that lift when they are known. It is not a decompiler of Ghidra's depth.",
                 "Register signatures are inferred unless DWARF names them. x86-32 cdecl arguments stay on the stack.",
                 "The file was not executed.",
             ]}

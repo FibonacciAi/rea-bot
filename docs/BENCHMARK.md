@@ -1,5 +1,7 @@
 # Native engine benchmark
 
+0.7.0 drives pinned Ghidra 12.1.4 from Lostwax (`rea-bot analyze --decompiler ghidra|native|auto`) and attaches Mach-O import calls. The tables below are the 0.6.0 native-versus-REA measurement. They are replaced by a three-way recount (Lostwax with Ghidra, Lostwax native, REA with Ghidra) after that run. Until then, the Mach-O "0 import edges" cell and the sentence that the DWARF lift body still says `arg0` describe 0.6.0, not the current native engine.
+
 One run of `python3 scripts/benchmark_native.py` on this machine, plus a follow-up `procedure_pseudo_code` call where the name `main` is not a Ghidra procedure. Lostwax used the pinned opt-in wheels (capstone 5.0.9, LIEF 1.0.0, wasmtime 50.0.1, dnfile 0.18.0, pyelftools 0.33, olefile 0.47). REA is rea-agents 6.5.0. The optional backends were installed and visible to the engine session:
 
 - Ghidra 12.1.4 at `GHIDRA_INSTALL_DIR` (the script records provider version 12.1.4 on every binary result), Java `openjdk 21.0.12.1`.
@@ -55,7 +57,7 @@ A separate unit test, not this table, instantiates a wasm module with one functi
 ## Where Lostwax is ahead on these targets
 
 - Control-flow counts for every disassembled function, including the freestanding x86-32 and ARM32 binaries, without a Ghidra install.
-- Named import edges on x86-64, ARM64 and PE. `/bin/ls` has 340 import edges and 85 named callees. The hello arm64 ELF has 127 import edges and 42 named callees. The ripgrep PE lists 132 imports. Mach-O still does not attach those names to calls.
+- Named import edges on x86-64, ARM64, PE and, as of 0.7.0, Mach-O. `/bin/ls` has 340 import edges and 85 named callees. The hello arm64 ELF has 127 import edges and 42 named callees. The ripgrep PE lists 132 imports. The 0.6.0 Mach-O row below still shows 0 import edges; that gap is closed in 0.7.0 and covered by `tests/test_native_live.py`.
 - A numeric result for the CRC module: 4/4 runner-attested cases. WABT validates and prints WAT, and does not run the module.
 - Source-map recovery of 12 Preact modules. Wakaru, on this already-modular file, emitted 1 module.
 - C# stack text for 120 methods, and a portable PDB (235 documents, 2,177 locals). REA's metadata counts match and REA did not emit C#.
@@ -64,16 +66,16 @@ A separate unit test, not this table, instantiates a wasm module with one functi
 
 ## Where REA is ahead
 
-- Decompiler quality. On `add`, Ghidra emits typed C, and with DWARF it uses `left` and `right` in the body. Lostwax keeps those names on the signature and still prints `return (arg1 + arg0);`. On `/bin/ls`, Ghidra's `entry` names `__libc_start_main` and the real body; the Lostwax lift of that entry is two lines, and the lift of the body is a branch-and-call sketch.
+- Decompiler quality on the 0.6.0 run. Ghidra emits typed C. With DWARF it uses `left` and `right` in the body. 0.7.0 substitutes those DWARF names into the native lift as well, and can run the same Ghidra decompiler directly. The three-way recount has to show whether the named C beats stock Ghidra or only matches it. On `/bin/ls`, Ghidra's `entry` names `__libc_start_main` and the real body; the native lift of that entry is two lines, and the lift of the body is a branch-and-call sketch.
 - Function and string inventory after a finished auto-analysis. Ghidra reported 7,524, 11,024 and 7,111 procedures on the three ripgrep builds, against 6,963, 10,840 and 6,832 discovered here, of which only 4,000 were disassembled. On `/bin/ls` the internal counts are close (189 functions against 186 non-external procedures) and Ghidra also lists 338 externals and 492 strings against 410 strings here.
 - WAT. The CRC module's decoded WAT is 10,045 code units. Lostwax does not print WAT.
 - The JavaScript application summary (26 of 28 rows, 933 semantic unknowns). The 12 recovered modules are not that model.
 - Whole-assembly managed structure: 14,835 call edges and 5,937 field accesses, against 120 lifted methods here.
-- Mach-O import calls, Thumb, and a classic PDB next to a PE. None of those were recovered here. `rg.pdb` is named and absent.
+- Thumb, and a classic PDB next to a PE. `rg.pdb` is named and absent. Mach-O import calls were not attached in this 0.6.0 run; 0.7.0 attaches them.
 
 ## Still open
 
-- The lifter is not Ghidra. It does not substitute DWARF names into the body, and it stops at 50 functions.
+- The native lifter stops at 50 functions. 0.7.0 does substitute DWARF names into that body. Typed C still comes from the opt-in Ghidra backend, which is the same decompiler REA uses.
 - x86-32 signatures stay unknown `cdecl` unless DWARF is present. ARM32 Thumb is not disassembled. ARM32 import stubs are not named. Mach-O compressed unwind is not decoded.
 - Each function keeps a bounded callee list, so the ripgrep PE call graph shows 41 import edges and 3 names even though 132 imports are listed.
 - Classic MSF type recovery is proven on a synthetic PDB in `tests/test_native.py`, not on a vendor PDB.

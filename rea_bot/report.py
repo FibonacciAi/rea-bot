@@ -168,5 +168,6 @@ def scorecard_md(run, diff, parity, score, acquired, scope, log_intact):
               '- Caller-supplied parity rows are not part of the parity score.',
               '- HTML comparison uses normalized visible text and does not run page scripts.',
               '- A JavaScript harness writes `undefined` as JSON `null`.',
-              '- Matching crashes are not parity in the JSON protocol. The CLI protocol does compare exit codes.', '']
+              '- Matching crashes are not parity in the JSON protocol. The CLI protocol does compare exit codes.',
+              '- Decompiled C and the native lift are observed-static. They are not runner-attested execution.', '']
     return '\n'.join(lines) + '\n'

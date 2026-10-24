@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.0
+Opt-in Ghidra decompiler, driven by Lostwax. The default install stays dependency-free. REA stays an optional backend and is not on this path.
+- `rea-bot ghidra setup` plans the pinned Ghidra 12.1.4 zip. `--apply --approve-source lostwax-ghidra@12.1.4` downloads it, checks SHA-256, and extracts it under `REA_BOT_GHIDRA_HOME`. An existing `GHIDRA_INSTALL_DIR` is used only when `Ghidra/application.properties` matches that pin. Java 21 is required and is not installed by the command. A missing Java or a mismatched tree is an error for `--decompiler ghidra` and a recorded fallback for `--decompiler auto`.
+- `rea-bot analyze <run> --decompiler ghidra|native|auto` (CLI default `auto`). `auto` uses the pinned Ghidra when it verifies, otherwise the native lift. The Python API and the MCP tool stay on `native` unless `decompiler` is passed, so a tool call does not start a headless run by surprise. Analyze still does not execute the target. Headless import is static.
+- The headless script applies DWARF parameter names and types, then exports the function list, signatures, per-function C and the calls of those functions. That result is merged with the native CFG, named imports and DWARF. `native/build.json` carries evidence id `native:decompiler` and a static feature. SPEC.md renders both. The scorecard states that this text is not a runtime pass.
+- Mach-O import stubs (arm64 `adrp`/`ldr`/`br`, and x86-64 RIP-relative jumps) are attached to call sites. Names stay as the binary records them, including a leading double underscore. DWARF parameter names are substituted into the native lift body.
+
 ## 0.6.0
 Deeper native analysis, still opt-in. The core install stays dependency-free. REA stays an optional backend.
 - CFG recovery covers x86-64, x86-32, arm64 and arm32. x86-64 PLT stubs, arm64 PLT stubs and PE import-address slots are named on the call graph. Mach-O import calls stay unnamed.

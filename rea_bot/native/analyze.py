@@ -230,6 +230,36 @@ def _evidence(summary_path, reports):
         add("native:cil", "Managed metadata and a bounded CIL disassembly. The assembly was not executed.")
     if archives:
         add("native:archive", "Archive members were unpacked recursively and not executed.")
+    decompiled = []
+    def walk_decompiler(node):
+        if not isinstance(node, dict):
+            return
+        kind = node.get("kind")
+        if kind == "native-binary":
+            ghidra = node.get("ghidra") or {}
+            lift = node.get("decompiler") or {}
+            if ghidra.get("decompiled_count") or lift.get("lifted"):
+                decompiled.append((ghidra, lift, node.get("path") or ""))
+        for member in node.get("members") or []:
+            walk_decompiler(member)
+    for report in reports:
+        walk_decompiler(report)
+    if decompiled:
+        ghidra_rows = [item[0] for item in decompiled if item[0].get("decompiled_count")]
+        if ghidra_rows:
+            sample = ghidra_rows[0]
+            add("native:decompiler",
+                "Ghidra %s listed %s functions (%s internal, %s external) and decompiled %s. Names applied %s, parameters applied %s. "
+                "Sample %s. Static C is not a runtime pass. The target was not executed."
+                % (sample.get("version"), sample.get("functions"), sample.get("internal"), sample.get("external"),
+                   sample.get("decompiled_count"), sample.get("names_applied"), sample.get("params_applied"),
+                   sample.get("sample_name") or "none"))
+        else:
+            lift = decompiled[0][1]
+            add("native:decompiler",
+                "Native structural lift of %s functions (%s with control flow). Sample %s. DWARF names are substituted when present. "
+                "This is not a Ghidra decompilation and it is not a runtime pass."
+                % (lift.get("lifted"), lift.get("with_control_flow"), lift.get("sample_name") or "none"))
     return rows
 
 
@@ -246,13 +276,20 @@ def _build(evidence, surface):
                      "behavior": "Function bounds, disassembly, call graph, strings and xrefs for the analyzed files.",
                      "test": "Re-run rea-bot analyze and compare the summary counts. This is static evidence, not a runtime parity case.",
                      "state": "observed-static", "evidence_ids": [evidence[0]["id"]]}]
+    if any(row["id"] == "native:decompiler" for row in evidence):
+        features.append({"id": "decompiled-pseudocode", "name": "Decompiled pseudocode",
+                         "interface": "Per-function text in native/detail.json (native lift, and C when the Ghidra backend ran).",
+                         "behavior": "Structural C-like lift, with DWARF names in the body when they exist. "
+                                     "When Ghidra ran, per-function C, signatures and the function list are merged with the native CFG and import names.",
+                         "test": "Re-run rea-bot analyze and compare the decompiler sample. Static text is not a runtime parity case.",
+                         "state": "observed-static", "evidence_ids": ["native:decompiler"]})
     return {"evidence": evidence, "features": features, "improvements": []}
 
 
 def _slim(node):
     if not isinstance(node, dict):
         return node
-    drop = {"functions_detail", "methods_detail", "wasm_modules", "types"}
+    drop = {"functions_detail", "methods_detail", "wasm_modules", "types", "ghidra_functions", "ghidra_decompiled"}
     out = {}
     for key, value in node.items():
         if key in drop:
@@ -267,7 +304,56 @@ def _slim(node):
     return out
 
 
-def analyze_run(run_or_id):
+def _binaries(reports):
+    found = []
+
+    def walk(node):
+        if not isinstance(node, dict):
+            return
+        if node.get("kind") == "native-binary":
+            found.append(node)
+        for member in node.get("members") or []:
+            walk(member)
+
+    for report in reports:
+        walk(report)
+    return found
+
+
+def _attach_ghidra(reports, limitations, required):
+    from . import ghidra_backend
+    binaries = [item for item in _binaries(reports) if item.get("path")]
+    if not binaries:
+        if required:
+            raise ValueError("No ELF, PE or Mach-O file was available for the Ghidra backend.")
+        return
+    ready = ghidra_backend.status()
+    if not ready["ready"]:
+        message = " ".join(ready["problems"])
+        if required:
+            raise ValueError(message)
+        limitations.append("Ghidra was not used. " + message)
+        return
+    if len(binaries) > ghidra_backend.MAX_BINARIES:
+        limitations.append("Ghidra ran on the first %d binaries. %d more were left to the native lift." % (
+            ghidra_backend.MAX_BINARIES, len(binaries) - ghidra_backend.MAX_BINARIES))
+    for report in binaries[:ghidra_backend.MAX_BINARIES]:
+        base, names, signatures, hints = ghidra_backend.hints_from(report)
+        try:
+            result = ghidra_backend.decompile(report["path"], source_base=base, names=names, signatures=signatures,
+                                              hints=hints)
+        except (ValueError, OSError) as err:
+            if required:
+                raise
+            limitations.append("Ghidra was not used for %s: %s" % (Path(report["path"]).name, str(err)[:240]))
+            continue
+        ghidra_backend.merge(report, result, source_base=base)
+
+
+def analyze_run(run_or_id, decompiler="native"):
+    mode = decompiler or "native"
+    if mode not in {"native", "ghidra", "auto"}:
+        raise ValueError("--decompiler must be ghidra, native or auto.")
     run = run_or_id if isinstance(run_or_id, store.Run) else store.Run(run_or_id)
     target = Path(_material(run))
     if not target.exists():
@@ -275,6 +361,8 @@ def analyze_run(run_or_id):
     out = run.dir / "native"
     out.mkdir(parents=True, exist_ok=True)
     reports, limitations = _collect(target, out / "recovered")
+    if mode in {"ghidra", "auto"}:
+        _attach_ghidra(reports, limitations, required=(mode == "ghidra"))
     if not reports:
         raise ValueError("Nothing in the target matched a native analyzer (binary, wasm, JavaScript, archive, asar, or .NET).")
     bundle = {"kind": "analysis", "target": str(target), "members": reports, "limitations": limitations,
@@ -302,10 +390,12 @@ def analyze_run(run_or_id):
                "files": {"summary": str(summary_path), "detail": str(out / "detail.json"),
                          "build": str(out / "build.json"), "harness": str(harness_path) if harness_path else None,
                          "cases": str(cases_path) if cases_path else None},
+               "decompiler": mode,
                "scripts_executed": False,
                "limitations": limitations + [
                    "Analyze does not execute the target. A harness runs only inside diff after digest approval.",
                    "Native pointer exports are not called.",
+                   "Decompiled text is observed-static. Headless Ghidra import does not run the target, and it is not a runtime parity pass.",
                ]}
     store.write_json(summary_path, summary)
     run.add_engine_evidence(summary["evidence_ids"])

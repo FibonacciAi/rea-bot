@@ -45,7 +45,7 @@ flowchart LR
 <p align="center"><img src="assets/flow.png" alt="How Lostwax works: study, spec, rebuild, side-by-side, proof" width="100%"></p>
 
 1. **Acquire.** For an npm package, a git commit or an HTTPS page, `acquire` fetches the bytes itself: registry SHA-512 and no lifecycle scripts, one commit with hooks off, or static HTML and same-origin assets. Page scripts are saved and not executed. Private and link-local addresses are refused. A local directory is used as-is.
-2. **Understand.** Routes the target, takes a bounded static inventory, and can list symbols in one file (`scope`) without returning source. `analyze` is Lostwax's own engine for ELF, PE and Mach-O (x86-64, x86-32, arm64 and arm32 control flow, named imports on x86-64, arm64 and PE, a structural C-like lift, DWARF and PDB when the bytes are present), wasm, JavaScript source maps, archives including CAB, MSI and NSIS, and .NET metadata with a C# stack lift. It does not execute the target. The optional REA engine remains available, and it sees Ghidra, WABT or Wakaru only when those programs are already installed and their locator variables are set.
+2. **Understand.** Routes the target, takes a bounded static inventory, and can list symbols in one file (`scope`) without returning source. `analyze` is Lostwax's own engine for ELF, PE and Mach-O (x86-64, x86-32, arm64 and arm32 control flow, named imports on x86-64, arm64, PE and Mach-O, a structural C-like lift with DWARF names in the body, PDB when the bytes are present), wasm, JavaScript source maps, archives including CAB, MSI and NSIS, and .NET metadata with a C# stack lift. `--decompiler ghidra` runs pinned Ghidra 12.1.4 headless from Lostwax and merges its C with that report. It does not execute the target. The optional REA engine remains available, and it sees Ghidra, WABT or Wakaru only when those programs are already installed and their locator variables are set.
 3. **Rebuild.** Turns the evidence into a small, digest-pinned capability matrix (SPEC.md). `harness` writes a JSON, CLI or HTML adapter for one JavaScript or Python export and does not run it. `cases` expands a seeded input grid. The bot builds and tests the rebuild in your workspace.
 4. **Prove.** `diff` runs the original (only after you approve its exact digest) and the rebuild on identical cases. Protocols are JSON values, CLI exit code plus stdout, or normalized HTML visible text. Mismatch evidence records both sides. Passes are marked *runner-attested*, and claims typed in by hand can't override them. `report` writes SCORECARD.md. Global parity always stays "unknown": a finite pass is never sold as "the whole product matches".
 
@@ -92,7 +92,8 @@ python3 $P/bin/rea-bot scope <run> --path package/index.js --symbol default
 python3 $P/bin/rea-bot harness <run> --entry package/index.js --symbol default --out /abs/adapter.mjs
 python3 $P/bin/rea-bot cases --input grid.json --out cases.json
 python3 $P/bin/rea-bot native status                 # optional native engine (plan)
-python3 $P/bin/rea-bot analyze <run>                 # disassembly, wasm, JS, archives; does not execute
+python3 $P/bin/rea-bot analyze <run>                 # --decompiler auto|ghidra|native; does not execute
+python3 $P/bin/rea-bot ghidra status                 # optional pinned Ghidra 12.1.4
 python3 $P/bin/rea-bot engine status                 # optional REA engine
 python3 $P/bin/rea-bot prepare <run> --input build.json
 python3 $P/bin/rea-bot pin /abs/path/to/original         # digest to approve
@@ -122,7 +123,9 @@ Runs are saved in `/workspace/rea-bot-runs/<run>/` (set `REA_BOT_HOME` to change
 
 ## Native engine
 
-`rea-bot native setup` prints the pinned wheels (capstone, LIEF, wasmtime, dnfile, pefile, pyelftools, olefile). `--apply --approve-source lostwax-native@1` downloads them, checks SHA-256, and installs with `pip --target --no-deps` under `REA_BOT_NATIVE_HOME` (default `/workspace/.rea-bot-native`). Then `rea-bot analyze <run>` writes `native/summary.json`, `native/detail.json` and `native/build.json`. When a wasm export surface is numeric, including a module whose imports are stubbed as wasmtime defaults, it also writes a harness and cases. Running that harness is a `diff` with `--approve-original` equal to the wasm digest. Head-to-head numbers are in [docs/BENCHMARK.md](docs/BENCHMARK.md).
+`rea-bot native setup` prints the pinned wheels (capstone, LIEF, wasmtime, dnfile, pefile, pyelftools, olefile). `--apply --approve-source lostwax-native@1` downloads them, checks SHA-256, and installs with `pip --target --no-deps` under `REA_BOT_NATIVE_HOME` (default `/workspace/.rea-bot-native`). Then `rea-bot analyze <run>` writes `native/summary.json`, `native/detail.json` and `native/build.json`. When a wasm export surface is numeric, including a module whose imports are stubbed as wasmtime defaults, it also writes a harness and cases. Running that harness is a `diff` with `--approve-original` equal to the wasm digest.
+
+`rea-bot ghidra setup` prints the pinned Ghidra 12.1.4 zip. `--apply --approve-source lostwax-ghidra@12.1.4` checks SHA-256 and extracts it under `REA_BOT_GHIDRA_HOME` (default `/workspace/.rea-bot-ghidra`). Java 21 is required and is not downloaded. `rea-bot analyze <run> --decompiler auto` uses that install when `application.properties` matches the pin, and otherwise keeps the native lift. `--decompiler ghidra` errors if Java or the pin is missing. The headless import does not execute the target. Decompiled C is evidence in SPEC.md, not a runtime pass. Head-to-head numbers are in [docs/BENCHMARK.md](docs/BENCHMARK.md).
 
 ## Optional REA engine
 

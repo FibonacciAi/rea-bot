@@ -272,6 +272,33 @@ class Binaries(TempHome):
             self.assertEqual(sig["source"], "dwarf")
             self.assertIn("left", " ".join(sig["args"]))
             self.assertIn("int", " ".join(sig["args"]))
+            body = "\n".join(by_name["add"].get("pseudocode") or [])
+            self.assertIn("left", body)
+            self.assertIn("right", body)
+
+    def test_macho_arm64_stub_slots(self):
+        from rea_bot.native.binary import _macho_arm64
+        raw = bytes.fromhex("900900b0100240f900021fd6900900b0100640f900021fd6900900b0100a40f900021fd6")
+        sections = [{"name": "__stubs", "va": 0x100283f1c, "raw": raw, "size": len(raw)}]
+        slots = {0x1003b4000: "__NSGetArgc", 0x1003b4008: "__NSGetArgv", 0x1003b4010: "__NSGetEnviron"}
+        mapping = _macho_arm64(sections, slots)
+        self.assertEqual(mapping[0x100283f1c], "__NSGetArgc")
+        self.assertEqual(mapping[0x100283f28], "__NSGetArgv")
+        self.assertEqual(mapping[0x100283f34], "__NSGetEnviron")
+
+    def test_decompiler_evidence_is_static(self):
+        from rea_bot.native.analyze import _build, _evidence
+        reports = [{"kind": "native-binary", "path": "/tmp/sample",
+                    "decompiler": {"lifted": 2, "with_control_flow": 1, "sample_name": "add", "sample": ["return (right + left);"]},
+                    "ghidra": {"version": "12.1.4", "functions": 4, "internal": 3, "external": 1,
+                              "decompiled_count": 1, "names_applied": 1, "params_applied": 2, "sample_name": "add"}}]
+        rows = _evidence(Path("/tmp/summary.json"), reports)
+        self.assertIn("native:decompiler", [row["id"] for row in rows])
+        self.assertIn("not a runtime pass", next(row["summary"] for row in rows if row["id"] == "native:decompiler"))
+        build = _build(rows, {})
+        feature = next(item for item in build["features"] if item["id"] == "decompiled-pseudocode")
+        self.assertEqual(feature["state"], "observed-static")
+        self.assertEqual(feature["evidence_ids"], ["native:decompiler"])
 
     def test_analyze_registers_evidence_for_prepare(self):
         run = api.new(str(EXAMPLE / "original"), "native-js")
