@@ -1,0 +1,39 @@
+{
+  "evidence": [
+    {
+      "id": "ms-entry",
+      "state": "source-derived",
+      "locator": "package/index.js",
+      "summary": "Default export: a non-empty string parses as a duration in milliseconds; a finite number formats short, or long when the options object sets long. Unrecognized strings produce no value."
+    }
+  ],
+  "features": [
+    {
+      "id": "parse-duration",
+      "name": "Parse a duration string",
+      "interface": "ms(text) -> number or null",
+      "behavior": "Units s, m, h, d, w, y and their long names, with an optional space, fraction or leading minus. A year is 365.25 days. Unrecognized strings have no JSON value (a harness writes JavaScript undefined as null).",
+      "test": "grid of duration strings",
+      "state": "source-derived",
+      "evidence_ids": ["ms-entry"]
+    },
+    {
+      "id": "format-short",
+      "name": "Short format",
+      "interface": "ms(milliseconds) -> string",
+      "behavior": "Largest unit among ms, s, m, h and d, rounded the way JavaScript Math.round rounds.",
+      "test": "numeric inputs without options",
+      "state": "source-derived",
+      "evidence_ids": ["ms-entry"]
+    },
+    {
+      "id": "format-long",
+      "name": "Long format",
+      "interface": "ms(milliseconds, {long: true}) -> string",
+      "behavior": "Same units as words. The unit is plural when the absolute value is at least 1.5 of that unit.",
+      "test": "numeric inputs with long set",
+      "state": "source-derived",
+      "evidence_ids": ["ms-entry"]
+    }
+  ]
+}

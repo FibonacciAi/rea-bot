@@ -1,0 +1,10 @@
+[
+  {"id": "echo-plain", "feature_id": "echo-version", "input": {"argv": ["1.2.3"]}},
+  {"id": "echo-zero", "feature_id": "echo-version", "input": {"argv": ["0.1.0"]}},
+  {"id": "inc-major", "feature_id": "increment", "input": {"argv": ["1.2.3", "-i", "major"]}},
+  {"id": "inc-minor", "feature_id": "increment", "input": {"argv": ["1.2.3", "--inc", "minor"]}},
+  {"id": "inc-patch", "feature_id": "increment", "input": {"argv": ["1.2.3", "-i", "patch"]}},
+  {"id": "bad-word", "feature_id": "reject-invalid", "input": {"argv": ["nope"]}},
+  {"id": "bad-short", "feature_id": "reject-invalid", "input": {"argv": ["1.2"]}},
+  {"id": "bad-leading-zero", "feature_id": "reject-invalid", "input": {"argv": ["01.2.3"]}}
+]

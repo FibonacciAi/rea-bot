@@ -7,8 +7,11 @@ Layout (default root: $REA_BOT_HOME or /workspace/rea-bot-runs):
   <run-id>/engine/<n>-<tool>.json full engine results (kept out of chat)
   <run-id>/specs/<sha256>.json  digest-verified specifications
   <run-id>/diff/<stamp>/        differential runner logs + summary
+  <run-id>/source/              acquired npm, git or website tree
+  <run-id>/ledger.json          cumulative case results for one command/pin key
+  <run-id>/scope.json, SCOPE.md static symbol index
   <run-id>/parity.json          latest parity accounting
-  <run-id>/SPEC.md, PARITY.md   human reports
+  <run-id>/SPEC.md, PARITY.md, SCORECARD.md
 """
 import contextlib
 import datetime

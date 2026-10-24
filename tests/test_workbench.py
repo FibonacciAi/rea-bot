@@ -24,6 +24,21 @@ class Ported(TempHome):
         self.assertEqual(r['kind'], 'javascript-application')
         self.assertTrue(r['engine_evidence_required'])
 
+    def test_language_package_routes(self):
+        py = self.root / 'py'
+        py.mkdir()
+        (py / 'pyproject.toml').write_text('[project]\nname = "sample"\n')
+        self.assertEqual(w.route_target(str(py))['kind'], 'python-package')
+        self.assertFalse(w.route_target(str(py))['engine_evidence_required'])
+        go = self.root / 'goproject'
+        go.mkdir()
+        (go / 'go.mod').write_text('module sample.dev/goproject\n\ngo 1.22\n')
+        self.assertEqual(w.route_target(str(go))['kind'], 'go-module')
+        rust = self.root / 'rustproject'
+        rust.mkdir()
+        (rust / 'Cargo.toml').write_text('[package]\nname = "sample"\nversion = "0.1.0"\n')
+        self.assertEqual(w.route_target(str(rust))['kind'], 'rust-crate')
+
     def test_rejects_credential_urls_and_unsupported_schemes(self):
         for target in ['https://name:password@example.org', 'http://example.org', 'file:///etc/passwd',
                        'https://example.org?token=secret', 'npm:pkg;touch /tmp/example', 'relative/path', '']:
