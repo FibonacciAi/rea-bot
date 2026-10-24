@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0
+Lostwax native analysis engine. The core install stays dependency-free. REA remains an optional backend.
+- `native setup` plans, then with `--apply --approve-source lostwax-native@1` installs pinned wheels (capstone, LIEF, wasmtime, dnfile, pefile) by SHA-256 into the native home. No setup scripts and no system install. Python >= 3.12 for those wheels.
+- `analyze` recovers x86-64 and arm64 function bounds, disassembly, control-flow and call graphs, ABI signatures, and string and constant xrefs for ELF, PE and Mach-O. It parses wasm, unpacks zip, tar, gzip, bzip2, xz, ar/deb and Electron asar recursively, recovers JavaScript modules from source maps, and disassembles .NET CIL. It does not execute the target.
+- A recognized wasm surface (buffer plus Calculate with the IEEE polynomial, or numeric exports with no function imports) writes a harness and a case grid. The harness runs only inside `diff` after a digest approval.
+- `examples/crc32-slice` is a zlib rebuild used to prove that generated CRC-32 harness.
+- MCP catalog is 20 tools. The three added are `rea_native_status`, `rea_native_setup` and `rea_analyze`.
+
 ## 0.4.0
 Acquire, scope and stronger proofs. Existing commands keep their behavior.
 - `acquire` fetches an npm tarball (registry SHA-512, no lifecycle scripts), one git commit (hooks, submodules and LFS smudge off) or a static HTTPS page. Private and link-local addresses are refused. Page scripts are not executed.

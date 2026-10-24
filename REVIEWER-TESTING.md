@@ -4,7 +4,7 @@ Free and open source (MIT). No accounts, keys or payments. Needs Python 3.10+ an
 
 ## A. In the app (after adding the plugin)
 
-1. Ask: **"Lostwax status"**. Expect version `0.4.0`, the two skill paths, `engine.ready` true or false, and `entitlements.plan: free` (certificates are free and unlimited).
+1. Ask: **"Lostwax status"**. Expect version `0.5.0`, the two skill paths, `engine.ready` true or false, `native.ready` true or false, and `entitlements.plan: free` (certificates are free and unlimited).
 2. Ask: **"Use Lostwax on its bundled example: try the naive rebuild in reconstruction-naive first."** The bot should:
    - create a run for `examples/search-fixture/original` (route `javascript-application`);
    - either call the REA engine (if staged) or, if the engine truly cannot run here, record an engine waiver (shown in SPEC.md);
@@ -37,7 +37,18 @@ This acquires real targets and prints JSON. Expect:
 - `https://example.com`: `scripts_executed` false. `--protocol html` matches the hand-written page's visible text. `--protocol cli --compare text` does not match, because the markup differs.
 - `https://github.com/vercel/ms` at commit `4ff48cec099f0514c3e9bbca18706c9c21122bfb`: commit pinned, hooks not run, `scope` of `src/index.ts` names `ms` and `parse`. That checkout is not executed.
 
-Offline, `python3 -m unittest discover -s tests -t .` covers the same mechanisms with local fixtures. The live tests in `tests/test_live.py` skip only when the registry cannot be reached.
+Offline, `python3 -m unittest discover -s tests -t .` covers the same mechanisms with local fixtures. The live tests in `tests/test_live.py` skip only when the registry cannot be reached. `tests/test_native_live.py` skips when the wasm runtime or the benchmark targets are absent.
+
+## D. Native engine
+
+```sh
+python3 bin/rea-bot native status
+python3 bin/rea-bot native setup --apply --approve-source lostwax-native@1   # once, after you accept the plan
+```
+
+`tests/test_native.py` disassembles `/bin/ls` (x86-64 function bounds, CFG, call graph, import edges, string xrefs), checks a compiled `add`/`sub` signature and call, parses and executes a tiny `add` wasm, round-trips an asar, and refuses a zip path escape. With wasmtime installed, the generated numeric harness matches a Python rebuild under `diff`.
+
+`tests/test_native_live.py` uses real files when they are on disk: a CRC-32 wasm recovered from its JavaScript wrapper (4/4 cases, `declared-features-match`, global parity unknown), a Preact source map (12 modules), a `.deb` that unpacks to an ELF, Newtonsoft.Json metadata and CIL, and ripgrep builds for arm64 ELF, Windows PE and Apple arm64 Mach-O. The comparison with REA on the same files is `docs/BENCHMARK.md`. Analyze never executes the target. The CRC harness runs only inside `diff` after the wasm digest is approved.
 
 ## What should never happen
 

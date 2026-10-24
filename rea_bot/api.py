@@ -9,9 +9,11 @@ WAIVER_RULE = ('If the engine truly cannot run here, pass --engine-waiver "<reas
 
 
 def status():
+    from .native import runtime as native_runtime
     return {'plugin': 'rea-bot', 'version': VERSION, 'display_name': 'Lostwax',
             'plugin_root': str(ROOT), 'skills': sorted(str(p) for p in (ROOT / 'skills').glob('*/SKILL.md')),
-            'runs_home': str(store.home()), 'engine': engine.status(), 'entitlements': entitlements.state(),
+            'runs_home': str(store.home()), 'engine': engine.status(), 'native': native_runtime.status(),
+            'entitlements': entitlements.state(),
             'target_execution': 'only via `diff` with a digest-pinned approval'}
 
 
@@ -60,8 +62,9 @@ def prepare(run_id, build, engine_waiver=None):
         linked = any(isinstance(e, dict) and e.get('id') in known for e in build.get('evidence', []))
         if not linked:
             if engine.status()['ready'] or not engine_waiver:
-                raise ValueError('This ' + route_info['kind'] + ' route needs real REA engine evidence. Run '
-                                 '`rea-bot engine call ' + run_id + '` with analyze_javascript_application (detail summary, focused source_paths) '
+                raise ValueError('This ' + route_info['kind'] + ' route needs real engine evidence. Run '
+                                 '`rea-bot analyze ' + run_id + '` or `rea-bot engine call ' + run_id + '` '
+                                 'with analyze_javascript_application (detail summary, focused source_paths) '
                                  'and link a returned evidence_id. ' + WAIVER_RULE)
             run.update_meta(engine_waiver=engine_waiver)
     spec = workbench.prepare_build(run.meta['target'], build.get('evidence'), build.get('features'), build.get('improvements'))
@@ -202,6 +205,21 @@ def cases(spec, out_path):
     destination.write_text(json.dumps(rows, indent=2, ensure_ascii=False) + '\n')
     return {'count': len(rows), 'out': str(destination.resolve()), 'feature_id': rows[0]['feature_id'],
             'ids': [row['id'] for row in rows[:20]]}
+
+
+def native_status():
+    from .native import runtime as native_runtime
+    return native_runtime.status()
+
+
+def native_setup(apply=False, approve=None):
+    from .native import runtime as native_runtime
+    return native_runtime.setup(bool(apply), approve)
+
+
+def analyze(run_id):
+    from .native.analyze import analyze_run
+    return analyze_run(run_id)
 
 
 def report_run(run_id):

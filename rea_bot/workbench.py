@@ -86,7 +86,7 @@ def route_target(target):
         match = re.fullmatch(r'npm:((?:@[a-z0-9._-]+/)?[a-z0-9._-]+)(?:@([a-zA-Z0-9.+_-]+))?', target)
         if not match:
             raise ValueError('Use npm:package@version or npm:@scope/package@version.')
-        out.update(kind='npm-package', first_tools=['rea-bot acquire (registry tarball, sha512 check, no lifecycle scripts)', 'inspect', 'scope', 'engine:analyze_javascript_application'],
+        out.update(kind='npm-package', first_tools=['rea-bot acquire (registry tarball, sha512 check, no lifecycle scripts)', 'rea-bot analyze', 'inspect', 'scope', 'engine:analyze_javascript_application'],
                    package_identity=npm_identity(*match.groups()),
                    acquisition='rea-bot acquire resolves an exact version, checks registry integrity, and extracts the tarball without lifecycle scripts or dependency installs.')
     elif '://' in target:
@@ -116,7 +116,7 @@ def route_target(target):
                         out['limitations'].append('Resolve branch/tag names with git ls-remote before acquisition; slash-containing refs can overlap the path. Do not silently use the default branch instead.')
         elif ((u.hostname in {'npmjs.com', 'www.npmjs.com'} and len(parts) > 1 and parts[0] == 'package')
                 or (u.hostname == 'registry.npmjs.org' and parts)):
-            out.update(kind='npm-package', first_tools=['rea-bot acquire (registry tarball, sha512 check, no lifecycle scripts)', 'inspect', 'scope', 'engine:analyze_javascript_application'],
+            out.update(kind='npm-package', first_tools=['rea-bot acquire (registry tarball, sha512 check, no lifecycle scripts)', 'rea-bot analyze', 'inspect', 'scope', 'engine:analyze_javascript_application'],
                        acquisition='rea-bot acquire resolves an exact version, checks registry integrity, and extracts the tarball without lifecycle scripts or dependency installs.')
             if parts and parts[0] == 'package':
                 tail = parts[1:]
@@ -135,11 +135,11 @@ def route_target(target):
         real = p.resolve()
         if real.is_dir():
             if real.suffix.lower() == '.app':
-                kind, tools = 'apple-app', ['inspect', 'engine:open_binary', 'engine:inspect_artifact']
+                kind, tools = 'apple-app', ['rea-bot analyze', 'inspect', 'engine:open_binary', 'engine:inspect_artifact']
             elif (real / '.git').exists():
                 kind, tools = 'source-repository', ['inspect', 'source reading with Read/rg']
             elif (real / 'package.json').is_file():
-                kind, tools = 'javascript-application', ['inspect', 'scope', 'engine:analyze_javascript_application']
+                kind, tools = 'javascript-application', ['rea-bot analyze', 'inspect', 'scope', 'engine:analyze_javascript_application']
             elif (real / 'pyproject.toml').is_file() or (real / 'setup.py').is_file() or (real / 'setup.cfg').is_file():
                 kind, tools = 'python-package', ['inspect', 'scope', 'source reading with Read/rg']
             elif (real / 'go.mod').is_file():
@@ -149,9 +149,9 @@ def route_target(target):
             else:
                 kind, tools = 'source-directory', ['inspect', 'scope', 'source reading with Read/rg']
         elif real.suffix.lower() == '.asar':
-            kind, tools = 'electron-asar', ['engine:analyze_javascript_application']
+            kind, tools = 'electron-asar', ['rea-bot analyze', 'engine:analyze_javascript_application']
         elif real.suffix.lower() in ARCHIVES:
-            kind, tools = 'package-archive', ['inspect', 'engine:open_binary', 'engine:inspect_artifact']
+            kind, tools = 'package-archive', ['rea-bot analyze', 'inspect', 'engine:open_binary', 'engine:inspect_artifact']
         else:
             with real.open('rb') as f:
                 head = f.read(16)
@@ -164,9 +164,9 @@ def route_target(target):
                 kind, tools = 'jvm-class', ['inspect', 'source/artifact tools']
                 out['limitations'].append('Java class header observed; no Mach-O provider is selected. A JVM provider is a separate prerequisite.')
             elif head.startswith(BINARY_MAGIC):
-                kind, tools = 'native-or-managed-binary', ['inspect', 'engine:open_binary']
+                kind, tools = 'native-or-managed-binary', ['rea-bot analyze', 'inspect', 'engine:open_binary']
             elif head.startswith(b'\x00asm'):
-                kind, tools = 'wasm', ['inspect', 'engine:inspect_wasm_artifact']
+                kind, tools = 'wasm', ['rea-bot analyze', 'inspect', 'engine:inspect_wasm_artifact']
             elif real.suffix.lower() in TEXT:
                 kind, tools = 'source-file', ['inspect', 'source reading with Read/rg']
         out.update(kind=kind, first_tools=tools, acquisition='Read the explicitly selected local target only.')

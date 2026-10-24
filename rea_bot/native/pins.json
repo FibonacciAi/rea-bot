@@ -1,0 +1,78 @@
+{
+  "name": "lostwax-native",
+  "version": "1",
+  "approve": "lostwax-native@1",
+  "python_min": [3, 12],
+  "packages": [
+    {
+      "name": "capstone",
+      "version": "5.0.9",
+      "wheels": [
+        {
+          "machine": "x86_64",
+          "sha256": "273fd8d747d2e35c88f91450be51a603ecfaafb00d96d9f315dcb8689c86193e",
+          "url": "https://files.pythonhosted.org/packages/d1/39/17747862222bb062e86b501f1f148d5ff589b77908b080d30f7f085cbfb7/capstone-5.0.9-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+        },
+        {
+          "machine": "aarch64",
+          "sha256": "41772ad0c71aa5d3e97d541e802593c2e71fb94ac7e20d4202f97ce2a3eb8ed5",
+          "url": "https://files.pythonhosted.org/packages/45/d9/dbeadb9fcd461e608ce79b1cb647fed6baa812fa6e1c68b0ba5ef81291af/capstone-5.0.9-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl"
+        }
+      ]
+    },
+    {
+      "name": "lief",
+      "version": "1.0.0",
+      "wheels": [
+        {
+          "machine": "x86_64",
+          "sha256": "41ff868f5328fc8e5237a9e1f4718590e0ee9180c1422b3e4948b7116ba4517c",
+          "url": "https://files.pythonhosted.org/packages/cd/d7/6e8135da80a63d8ee413f169eda8c331817bf6f1496fc5647722b105aa19/lief-1.0.0-cp312-abi3-manylinux_2_28_x86_64.whl"
+        },
+        {
+          "machine": "aarch64",
+          "sha256": "a9e4b9e165bde0163624e159c8c7a096e3d6f671371c70d008baac7ac1f04f0d",
+          "url": "https://files.pythonhosted.org/packages/5a/f8/3aba2989bd9f48e796de5260a19acb2af1e6562b147e32a2a26e418a9b58/lief-1.0.0-cp312-abi3-manylinux_2_28_aarch64.whl"
+        }
+      ]
+    },
+    {
+      "name": "wasmtime",
+      "version": "50.0.1",
+      "wheels": [
+        {
+          "machine": "x86_64",
+          "sha256": "cc14c3a17654e0394e0225b11813532ef0cd7bd1e222a0c5494cdedaabeddac4",
+          "url": "https://files.pythonhosted.org/packages/d5/9d/97c109d4a25c716c4045644398d7e684e1d4fa5ec6c99412b5cba35a9a98/wasmtime-50.0.1-py3-none-manylinux1_x86_64.whl"
+        },
+        {
+          "machine": "aarch64",
+          "sha256": "675484e525c028dc02762b777f1db4477ea70caa3fec6775426daff4d64edfb1",
+          "url": "https://files.pythonhosted.org/packages/8e/c4/58709b73e613e5366e4783537e2a861272d95f500c43fddf9b378d98415a/wasmtime-50.0.1-py3-none-manylinux2014_aarch64.whl"
+        }
+      ]
+    },
+    {
+      "name": "dnfile",
+      "version": "0.18.0",
+      "wheels": [
+        {
+          "machine": "any",
+          "sha256": "7579fe2d6bb1d854aa154929c309fbf34e70b622053a043a51d42f079fad1772",
+          "url": "https://files.pythonhosted.org/packages/39/ad/4f945155a78800cea02cb258bc0b7704c43cf94f50f75c808f0618694153/dnfile-0.18.0-py3-none-any.whl"
+        }
+      ]
+    },
+    {
+      "name": "pefile",
+      "version": "2024.8.26",
+      "wheels": [
+        {
+          "machine": "any",
+          "sha256": "76f8b485dcd3b1bb8166f1128d395fa3d87af26360c2358fb75b80019b957c6f",
+          "url": "https://files.pythonhosted.org/packages/54/16/12b82f791c7f50ddec566873d5bdd245baa1491bac11d15ffb98aecc8f8b/pefile-2024.8.26-py3-none-any.whl"
+        }
+      ]
+    }
+  ]
+}

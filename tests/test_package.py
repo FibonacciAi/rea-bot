@@ -80,9 +80,11 @@ class Package(unittest.TestCase):
     def test_hygiene(self):
         lengths = sorted({n for n, _ in BANNED_SUBSTRINGS})
         for p in ROOT.rglob('*'):
+            if {'.git', '__pycache__', '.rea-bot-engine', '.rea-bot-native'} & set(p.parts):
+                continue
             if p.is_symlink():
                 self.fail('symlink packaged: ' + str(p))
-            if not p.is_file() or p.suffix in {'.png', '.pyc'} or p.parent.name == 'engine' or {'.git', '__pycache__'} & set(p.parts):
+            if not p.is_file() or p.suffix in {'.png', '.pyc'} or p.parent.name == 'engine':
                 continue
             raw = p.read_bytes().lower()
             for word in set(re.findall(rb'[a-z0-9]+', raw)):

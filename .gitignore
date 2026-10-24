@@ -9,6 +9,8 @@ venv/
 node_modules/
 .runtime/
 .rea-bot-engine/
+.rea-bot-native/
+docs/benchmark-last.json
 rea-bot-runs/
 node22/
 node-v*/

@@ -1,0 +1,751 @@
+"""ELF, PE and Mach-O analysis: sections, symbols, imports, exports, disassembly, CFG, call graph, xrefs.
+
+Disassembly and control flow are native (Capstone). Function bounds come from .eh_frame, the PE
+exception directory, Mach-O function starts, symbols, and direct call targets. Nothing is executed.
+"""
+import struct
+import time
+
+from . import ehframe
+from .runtime import activate
+
+MAX_FUNCTIONS = 4000
+MAX_INSNS = 350_000
+MAX_INSNS_FN = 6000
+MAX_STRINGS = 5000
+MAX_NEW_FUNCS = 400
+
+_NOREPORT = {"abort", "exit", "_exit", "__stack_chk_fail", "__assert_fail", "longjmp", "__longjmp_chk", "err", "errx"}
+
+
+def _hex(n):
+    return hex(int(n))
+
+
+def _arch(binary):
+    parts = []
+    header = getattr(binary, "header", None)
+    if header is not None:
+        for attr in ("machine_type", "machine", "cpu_type"):
+            if hasattr(header, attr):
+                parts.append(str(getattr(header, attr)))
+    text = " ".join(parts).upper()
+    if "AARCH64" in text or "ARM64" in text:
+        return "arm64"
+    if "X86_64" in text or "AMD64" in text:
+        return "x86-64"
+    if "I386" in text or text.endswith("X86") or ".X86" in text:
+        return "x86"
+    if "ARM" in text:
+        return "arm"
+    return "unknown"
+
+
+def _imagebase(binary):
+    fmt = str(binary.format)
+    if "PE" in fmt:
+        return int(binary.optional_header.imagebase)
+    if "MACHO" in fmt:
+        return int(getattr(binary, "imagebase", 0) or 0)
+    return 0
+
+
+def _va(binary, value):
+    value = int(value or 0)
+    base = _imagebase(binary)
+    if base and 0 < value < base:
+        return value + base
+    return value
+
+
+def _executable(binary, sec):
+    fmt = str(binary.format)
+    try:
+        if "ELF" in fmt:
+            import lief
+            return bool(sec.has(lief.ELF.Section.FLAGS.EXECINSTR))
+        if "PE" in fmt:
+            return bool(int(getattr(sec, "characteristics", 0)) & 0x20000000)
+        if "MACHO" in fmt:
+            return bool(int(getattr(sec, "flags", 0)) & 0x80000400)
+    except Exception:
+        return False
+    return False
+
+
+def _sections(binary):
+    out = []
+    for sec in list(binary.sections):
+        raw = bytes(sec.content) if sec.size else b""
+        item = {"name": str(sec.name), "va": _va(binary, sec.virtual_address), "size": int(sec.size),
+                "file_size": len(raw), "executable": _executable(binary, sec), "raw": raw}
+        out.append(item)
+    return out
+
+
+def _bytes_at(sections, va, size):
+    for sec in sections:
+        raw = sec["raw"]
+        if not raw:
+            continue
+        start, end = sec["va"], sec["va"] + len(raw)
+        if start <= va < end:
+            off = va - start
+            return raw[off:off + size]
+    return b""
+
+
+def _symbols(binary):
+    names = {}
+    for attr in ("symbols", "symtab_symbols", "dynamic_symbols"):
+        seq = getattr(binary, attr, None)
+        if seq is None:
+            continue
+        try:
+            items = list(seq)
+        except Exception:
+            continue
+        for sym in items:
+            name = str(getattr(sym, "name", "") or "")
+            value = _va(binary, getattr(sym, "value", 0) or getattr(sym, "address", 0) or 0)
+            if name and value:
+                names.setdefault(value, name)
+    return names
+
+
+def _imports(binary):
+    found = []
+    seq = getattr(binary, "imported_functions", None) or getattr(binary, "imported_symbols", None) or []
+    try:
+        items = list(seq)
+    except Exception:
+        items = []
+    for item in items:
+        name = item if isinstance(item, str) else str(getattr(item, "name", "") or "")
+        if name:
+            found.append(name)
+    # Stable, unique, bounded.
+    out = []
+    seen = set()
+    for name in found:
+        if name not in seen:
+            seen.add(name)
+            out.append(name)
+        if len(out) >= 2000:
+            break
+    return out
+
+
+def _exports(binary, names):
+    out = []
+    seq = getattr(binary, "exported_functions", None) or []
+    try:
+        items = list(seq)
+    except Exception:
+        items = []
+    for item in items:
+        if isinstance(item, str):
+            out.append({"name": item, "address": None, "size": 0})
+            continue
+        addr = _va(binary, getattr(item, "address", 0))
+        name = str(getattr(item, "name", "") or "") or names.get(addr, "")
+        out.append({"name": name, "address": _hex(addr) if addr else None, "size": int(getattr(item, "size", 0) or 0)})
+        if len(out) >= 2000:
+            break
+    return out
+
+
+def _eh_functions(binary, sections):
+    fmt = str(binary.format)
+    if "ELF" not in fmt:
+        return []
+    ptr = 8
+    try:
+        klass = str(binary.header.identity_class).upper()
+        ptr = 4 if "32" in klass and "64" not in klass else 8
+    except Exception:
+        ptr = 8
+    for sec in sections:
+        if sec["name"] == ".eh_frame" and sec["raw"]:
+            try:
+                return ehframe.functions(sec["raw"], sec["va"], ptr)
+            except Exception:
+                return []
+    return []
+
+
+def _pdata(binary):
+    fmt = str(binary.format)
+    if "PE" not in fmt:
+        return []
+    dirs = list(getattr(binary, "data_directories", []) or [])
+    exc = None
+    for d in dirs:
+        if "EXCEPTION" in str(getattr(d, "type", "")).upper():
+            exc = d
+            break
+    if exc is None or not int(getattr(exc, "size", 0) or 0):
+        return []
+    rva = int(getattr(exc, "rva", 0) or 0)
+    size = int(exc.size)
+    base = _imagebase(binary)
+    try:
+        data = bytes(binary.get_content_from_virtual_address(base + rva, size))
+    except Exception:
+        return []
+    found = []
+    for i in range(0, len(data) - 11, 12):
+        begin, end, _unwind = struct.unpack_from("<III", data, i)
+        if not begin or end <= begin or end - begin > 1_000_000:
+            continue
+        found.append((base + begin, end - begin))
+    return found
+
+
+def _macho_starts(binary):
+    starts = getattr(binary, "function_starts", None)
+    if starts is None:
+        return []
+    seq = getattr(starts, "functions", None)
+    if seq is None:
+        try:
+            seq = list(starts)
+        except TypeError:
+            return []
+    try:
+        return [(_va(binary, int(x)), 0) for x in list(seq) if int(x)]
+    except Exception:
+        return []
+
+
+def _plt(binary, sections):
+    """Map PLT stub addresses to import names via RIP-relative jumps into the GOT."""
+    got = {}
+    try:
+        rels = list(getattr(binary, "pltgot_relocations", []) or [])
+    except Exception:
+        rels = []
+    for rel in rels:
+        sym = getattr(rel, "symbol", None)
+        name = str(getattr(sym, "name", "") or "") if sym is not None else ""
+        if name:
+            got[_va(binary, rel.address)] = name
+    if not got:
+        return {}
+    from capstone import CS_ARCH_X86, CS_MODE_64, CS_OP_MEM, Cs
+    from capstone.x86_const import X86_REG_RIP
+    md = Cs(CS_ARCH_X86, CS_MODE_64)
+    md.detail = True
+    mapping = {}
+    for sec in sections:
+        if sec["name"] not in {".plt", ".plt.sec", ".plt.got"} or not sec["raw"]:
+            continue
+        start = sec["va"]
+        stub = start
+        for insn in md.disasm(sec["raw"], start):
+            if insn.mnemonic == "endbr64":
+                stub = insn.address
+            mem = None
+            for op in insn.operands:
+                if op.type == CS_OP_MEM and op.mem.base == X86_REG_RIP:
+                    mem = insn.address + insn.size + op.mem.disp
+            if insn.mnemonic == "jmp" and mem in got:
+                # Calls land on the stub entry (often endbr64), not on the jmp.
+                mapping[stub] = got[mem]
+                aligned = start + ((insn.address - start) & ~0xF)
+                mapping.setdefault(aligned, got[mem])
+                stub = None
+            elif stub is None:
+                stub = insn.address
+    return mapping
+
+
+_SKIP_STRINGS = {".dynstr", ".strtab", ".shstrtab", ".comment", ".interp", ".gnu.hash",
+                   ".gnu.version", ".gnu.version_r", ".eh_frame", ".eh_frame_hdr", ".dynamic", ".got", ".got.plt"}
+
+
+def _strings(sections):
+    found = []
+    for sec in sections:
+        name = sec["name"]
+        if sec["executable"] or not sec["raw"] or not sec["va"]:
+            continue
+        if name in _SKIP_STRINGS or name.startswith(".debug") or name.startswith(".note") or name.startswith(".gnu_debug"):
+            continue
+        raw = sec["raw"]
+        i = 0
+        while i < len(raw) and len(found) < MAX_STRINGS:
+            if 32 <= raw[i] < 127:
+                j = i
+                while j < len(raw) and 32 <= raw[j] < 127:
+                    j += 1
+                if 4 <= j - i <= 240 and j < len(raw) and raw[j] == 0:
+                    found.append((sec["va"] + i, raw[i:j].decode("ascii")))
+                    i = j + 1
+                    continue
+            i += 1
+    return found
+
+
+def _string_samples(strings):
+    texts = [text for _, text in strings]
+    interesting = [text for text in texts if " " in text and len(text) >= 8]
+    return (interesting or texts)[:12]
+
+
+def _cs(arch):
+    from capstone import CS_ARCH_ARM, CS_ARCH_ARM64, CS_ARCH_X86, CS_MODE_32, CS_MODE_64, CS_MODE_ARM, CS_MODE_LITTLE_ENDIAN, Cs
+    if arch == "x86-64":
+        md = Cs(CS_ARCH_X86, CS_MODE_64)
+    elif arch == "arm64":
+        md = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
+    elif arch == "x86":
+        md = Cs(CS_ARCH_X86, CS_MODE_32)
+    elif arch == "arm":
+        md = Cs(CS_ARCH_ARM, CS_MODE_ARM)
+    else:
+        return None
+    md.detail = True
+    md.skipdata = False
+    return md
+
+
+def _arg_index(arch, name):
+    if arch == "x86-64":
+        table = {"rdi": 0, "edi": 0, "di": 0, "dil": 0, "rsi": 1, "esi": 1, "si": 1, "sil": 1,
+                 "rdx": 2, "edx": 2, "dx": 2, "dl": 2, "rcx": 3, "ecx": 3, "cx": 3, "cl": 3,
+                 "r8": 4, "r8d": 4, "r8w": 4, "r8b": 4, "r9": 5, "r9d": 5, "r9w": 5, "r9b": 5}
+        return table.get(name)
+    if arch == "arm64":
+        if name and name[0] in "xw" and name[1:].isdigit():
+            n = int(name[1:])
+            if 0 <= n <= 7:
+                return n
+    return None
+
+
+def _ret_reg(name, arch):
+    if arch == "x86-64":
+        return name in {"rax", "eax", "ax", "al", "xmm0"}
+    if arch == "arm64":
+        return name in {"x0", "w0", "d0", "s0"}
+    return False
+
+
+def _touch(md, insn, arch):
+    reads, writes = [], []
+    ops = list(insn.operands)
+    regs = []
+    for op in ops:
+        if op.type == 1:  # REG in both x86 and arm64 builds we ship
+            regs.append(md.reg_name(op.reg))
+        else:
+            regs.append(None)
+    mnem = insn.mnemonic
+    if arch == "x86-64":
+        if mnem in {"cmp", "test"} or mnem.startswith("j") or mnem in {"call", "jmp", "push"}:
+            reads = [r for r in regs if r]
+        elif mnem == "pop" and regs and regs[0]:
+            writes = [regs[0]]
+        elif mnem == "xor" and len(regs) >= 2 and regs[0] and regs[0] == regs[1]:
+            writes = [regs[0]]
+        else:
+            if regs and regs[0]:
+                writes.append(regs[0])
+            reads = [r for r in regs[1:] if r]
+            if mnem not in {"mov", "lea"} and regs and regs[0]:
+                reads.append(regs[0])
+    elif arch == "arm64":
+        if mnem in {"cmp", "cmn", "tst"} or mnem.startswith("b") or mnem in {"cbz", "cbnz", "tbz", "tbnz", "ret", "br", "blr", "str", "stp"}:
+            reads = [r for r in regs if r]
+        else:
+            if regs and regs[0]:
+                writes.append(regs[0])
+            reads = [r for r in regs[1:] if r]
+            if regs and regs[0] and mnem not in {"mov", "movz", "movn", "movk"}:
+                reads.insert(0, regs[0])
+    return reads, writes
+
+
+def _signature(md, insns, arch):
+    if arch not in {"x86-64", "arm64"}:
+        return {"args": [], "returns": "unknown", "state": "unknown", "note": "Signature inference is implemented for x86-64 and arm64."}
+    used = set()
+    written = set()
+    returns = False
+    for insn in insns[:64]:
+        if insn.mnemonic in {"call", "bl", "blr"}:
+            break
+        reads, writes = _touch(md, insn, arch)
+        for reg in reads:
+            idx = _arg_index(arch, reg)
+            if idx is not None and reg not in written:
+                used.add(idx)
+        for reg in writes:
+            written.add(reg)
+            if _ret_reg(reg, arch):
+                returns = True
+    args = []
+    if used:
+        for i in range(max(used) + 1):
+            args.append("arg%d" % i if i in used else "arg%d?" % i)
+    return {"args": args, "nargs": len(args), "returns": "gpr0" if returns else "unknown", "state": "inferred",
+            "convention": "sysv" if arch == "x86-64" else "aapcs64"}
+
+
+def _flow(md, insns, arch, start, end):
+    by_addr = {insn.address: insn for insn in insns}
+    leaders = {start}
+    edges = []
+    direct_calls = []
+    indirect = 0
+    resolved = []  # (kind, address or None, text target)
+
+    def imm_target(insn):
+        for op in insn.operands:
+            if op.type == 2:  # IMM
+                return op.imm & ((1 << 64) - 1)
+        return None
+
+    for insn in insns:
+        mnem = insn.mnemonic
+        nxt = insn.address + insn.size
+        is_call = mnem in {"call", "bl", "blr"}
+        is_ret = mnem in {"ret", "retn", "retf"}
+        is_jump = (mnem == "jmp" or mnem in {"b", "br"} or mnem.startswith("b.") or mnem in
+                   {"je", "jne", "ja", "jae", "jb", "jbe", "jg", "jge", "jl", "jle", "js", "jns", "jo", "jno", "jp", "jnp",
+                    "jcxz", "jecxz", "jrcxz", "cbz", "cbnz", "tbz", "tbnz"})
+        target = imm_target(insn)
+        if is_call:
+            if mnem == "blr" or (mnem == "call" and target is None):
+                indirect += 1
+                direct_calls.append(None)
+            elif target is not None:
+                direct_calls.append(target)
+            if nxt < end:
+                leaders.add(nxt)
+        elif is_ret:
+            pass
+        elif is_jump:
+            if target is not None and start <= target < end:
+                leaders.add(target)
+                edges.append((insn.address, target, "jump"))
+            else:
+                indirect += 1
+            conditional = mnem not in {"jmp", "b", "br"}
+            if conditional and nxt < end:
+                leaders.add(nxt)
+                edges.append((insn.address, nxt, "fall"))
+        else:
+            if nxt < end and nxt in by_addr:
+                pass
+    # Fallthrough edges between consecutive blocks.
+    ordered = sorted(a for a in leaders if a in by_addr)
+    blocks = []
+    for i, addr in enumerate(ordered):
+        stop = ordered[i + 1] if i + 1 < len(ordered) else end
+        body = []
+        cur = addr
+        while cur in by_addr and cur < stop:
+            insn = by_addr[cur]
+            body.append(insn)
+            cur = insn.address + insn.size
+        if not body:
+            continue
+        last = body[-1]
+        blocks.append({"address": addr, "end": last.address + last.size, "insns": len(body), "last": last})
+    for i, block in enumerate(blocks):
+        last = block["last"]
+        nxt = last.address + last.size
+        mnem = last.mnemonic
+        terminal = mnem in {"ret", "retn", "retf", "jmp", "b", "br"} or mnem.startswith("b.") or mnem in {
+            "je", "jne", "ja", "jae", "jb", "jbe", "jg", "jge", "jl", "jle", "js", "jns", "jo", "jno", "jp", "jnp",
+            "cbz", "cbnz", "tbz", "tbnz"}
+        if not terminal and i + 1 < len(blocks) and blocks[i + 1]["address"] == nxt:
+            edges.append((last.address, nxt, "fall"))
+    return {"blocks": len(blocks), "edges": len(edges), "calls": direct_calls, "indirect": indirect}
+
+
+def _control(mnemonic):
+    return mnemonic in {"call", "jmp", "bl", "blr", "b", "br", "ret"} or mnemonic.startswith("j") or mnemonic.startswith("b.")
+
+
+def _mem_targets(insn, arch):
+    targets = []
+    flow = _control(insn.mnemonic)
+    if arch == "x86-64":
+        from capstone import CS_OP_IMM, CS_OP_MEM
+        from capstone.x86_const import X86_REG_RIP
+        for op in insn.operands:
+            if op.type == CS_OP_MEM and op.mem.base == X86_REG_RIP:
+                targets.append(insn.address + insn.size + op.mem.disp)
+            elif not flow and op.type == CS_OP_IMM and op.imm > 0x1000:
+                targets.append(op.imm & ((1 << 64) - 1))
+    # ARM64 absolute addresses come from ADRP pairs in _arm_pages, not from raw immediates.
+    return targets
+
+
+def _arm_pages(md, insns):
+    """Map the address of an ADD/LDR to the absolute address formed with the previous ADRP."""
+    pending = None
+    found = {}
+    for insn in insns:
+        ops = list(insn.operands)
+        if pending:
+            reg, base = pending
+            pending = None
+            addr = None
+            if insn.mnemonic == "add" and len(ops) >= 3 and ops[1].type == 1 and ops[2].type == 2 and md.reg_name(ops[1].reg) == reg:
+                addr = base + ops[2].imm
+            elif insn.mnemonic.startswith("ldr") and len(ops) >= 2 and ops[1].type == 3 and md.reg_name(ops[1].mem.base) == reg:
+                addr = base + int(ops[1].mem.disp)
+            if addr is not None:
+                found.setdefault(insn.address, []).append(addr)
+        if insn.mnemonic == "adrp" and len(ops) >= 2 and ops[0].type == 1 and ops[1].type == 2:
+            pending = (md.reg_name(ops[0].reg), ops[1].imm)
+    return found
+
+
+def _in_exec(sections, addr):
+    for sec in sections:
+        if sec["executable"] and sec["va"] <= addr < sec["va"] + max(sec["size"], len(sec["raw"])):
+            return True
+    return False
+
+
+def _lookup_string(strings, addr):
+    # strings sorted by address
+    lo, hi = 0, len(strings)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if strings[mid][0] <= addr:
+            lo = mid + 1
+        else:
+            hi = mid
+    if lo == 0:
+        return None
+    start, text = strings[lo - 1]
+    if start == addr:
+        return text
+    return None
+
+
+def _disassemble(md, arch, func, sections, plt, strings, names, budget):
+    raw = _bytes_at(sections, func["address"], func["size"])
+    if not raw:
+        func.update({"instructions": 0, "blocks": 0, "cfg_edges": 0, "callees": [], "callee_count": 0,
+                     "indirect_calls": 0, "string_xrefs": [], "string_xref_count": 0,
+                     "constant_xrefs": [], "constant_xref_count": 0, "assembly": [], "signature": None})
+        return 0
+    insns = []
+    for insn in md.disasm(raw, func["address"]):
+        insns.append(insn)
+        if len(insns) >= MAX_INSNS_FN or budget[0] >= MAX_INSNS:
+            break
+    budget[0] += len(insns)
+    flow = _flow(md, insns, arch, func["address"], func["address"] + func["size"])
+    callees = []
+    for target in flow["calls"]:
+        if target is None:
+            callees.append({"kind": "indirect"})
+            continue
+        if target in plt:
+            callees.append({"kind": "import", "name": plt[target], "address": _hex(target)})
+        else:
+            callees.append({"kind": "direct", "name": names.get(target, ""), "address": _hex(target)})
+    string_xrefs = []
+    constant_xrefs = []
+    extra = _arm_pages(md, insns) if arch == "arm64" else {}
+    for insn in insns:
+        for addr in list(_mem_targets(insn, arch)) + extra.get(insn.address, []):
+            text = _lookup_string(strings, addr)
+            if text is not None:
+                string_xrefs.append({"from": _hex(insn.address), "address": _hex(addr), "text": text[:80]})
+            elif addr not in {insn.address, insn.address + insn.size} and not _in_exec(sections, addr):
+                constant_xrefs.append({"from": _hex(insn.address), "address": _hex(addr)})
+    sig = _signature(md, insns, arch)
+    asm = ["%s: %s %s" % (_hex(insn.address), insn.mnemonic, insn.op_str) for insn in insns[:12]]
+    func.update({"instructions": len(insns), "blocks": flow["blocks"], "cfg_edges": flow["edges"],
+                 "callees": callees[:16], "callee_count": len(callees), "indirect_calls": flow["indirect"],
+                 "string_xrefs": string_xrefs[:8], "string_xref_count": len(string_xrefs),
+                 "constant_xrefs": constant_xrefs[:8], "constant_xref_count": len(constant_xrefs),
+                 "signature": sig, "assembly": asm, "calls": flow["calls"]})
+    return len(insns)
+
+
+def _merge(funcs, addr, size, origin, name=""):
+    cur = funcs.get(addr)
+    if cur is None:
+        funcs[addr] = {"address": addr, "size": size, "origin": origin, "name": name}
+        return
+    if size and (not cur["size"] or origin == "symbol"):
+        cur["size"] = max(cur["size"], size)
+    if name and not cur["name"]:
+        cur["name"] = name
+    if origin == "eh-frame" or (origin == "pdata" and cur["origin"] not in {"eh-frame", "symbol"}):
+        cur["origin"] = origin
+
+
+def analyze_binary(path):
+    activate()
+    import lief
+    try:
+        lief.logging.disable()
+    except Exception:
+        pass
+    started = time.perf_counter()
+    parsed = lief.parse(str(path))
+    if parsed is None:
+        raise ValueError("Not an ELF, PE or Mach-O file.")
+    binaries = [parsed]
+    if type(parsed).__name__ == "FatBinary":
+        binaries = [parsed.at(i) for i in range(len(parsed))]
+    reports = [_one(b) for b in binaries[:3]]
+    # Prefer a slice we can actually disassemble.
+    reports.sort(key=lambda r: (r["arch"] not in {"x86-64", "arm64"}, -r["functions"]["count"]))
+    primary = reports[0]
+    primary["slices"] = len(binaries)
+    primary["other_slices"] = [{"arch": r["arch"], "format": r["format"], "functions": r["functions"]["count"]} for r in reports[1:]]
+    primary["seconds"] = round(time.perf_counter() - started, 4)
+    primary["path"] = str(path)
+    return primary
+
+
+def _one(binary):
+    arch = _arch(binary)
+    sections = _sections(binary)
+    names = _symbols(binary)
+    funcs = {}
+    for addr, size in _eh_functions(binary, sections):
+        _merge(funcs, addr, size, "eh-frame", names.get(addr, ""))
+    for addr, size in _pdata(binary):
+        _merge(funcs, addr, size, "pdata", names.get(addr, ""))
+    for addr, size in _macho_starts(binary):
+        _merge(funcs, addr, size, "function-starts", names.get(addr, ""))
+    try:
+        for fn in list(getattr(binary, "functions", []) or []):
+            addr = _va(binary, fn.address)
+            size = int(fn.size or 0)
+            if addr and size:
+                _merge(funcs, addr, size, "exception-table", str(fn.name or "") or names.get(addr, ""))
+    except Exception:
+        pass
+    for addr, name in names.items():
+        if addr and name and not name.startswith("_ITM") and addr not in funcs:
+            # Symbol without a size: keep it, size filled from the next function later.
+            _merge(funcs, addr, 0, "symbol", name)
+    entry = _va(binary, binary.entrypoint)
+    if entry and entry not in funcs:
+        _merge(funcs, entry, 0, "entry", names.get(entry, "entry"))
+    ordered = sorted(funcs)
+    for i, addr in enumerate(ordered):
+        if not funcs[addr]["size"]:
+            nxt = ordered[i + 1] if i + 1 < len(ordered) else addr + 256
+            funcs[addr]["size"] = max(0, min(nxt - addr, 4096))
+            funcs[addr]["size_approximate"] = True
+    # Drop empty and absurd ranges.
+    kept = [f for f in funcs.values() if f["size"] > 0 and f["size"] < 1_000_000]
+    kept.sort(key=lambda f: f["address"])
+    discovered_count = len(kept)
+    if len(kept) > MAX_FUNCTIONS:
+        kept = kept[:MAX_FUNCTIONS]
+        truncated_funcs = True
+    else:
+        truncated_funcs = False
+    strings = _strings(sections)
+    strings.sort()
+    plt = {}
+    md = _cs(arch) if arch in {"x86-64", "arm64", "x86", "arm"} else None
+    limitations = []
+    if arch not in {"x86-64", "arm64"}:
+        limitations.append("Full CFG and signature recovery are implemented for x86-64 and arm64. This file is %s; structure, symbols and strings are still reported." % arch)
+    if md is not None and arch == "x86-64":
+        try:
+            plt = _plt(binary, sections)
+        except Exception as err:
+            plt = {}
+            limitations.append("PLT names were not recovered: " + str(err)[:180])
+    budget = [0]
+    call_edges = 0
+    import_edges = 0
+    indirect = 0
+    blocks = 0
+    cfg_edges = 0
+    string_xrefs = 0
+    constant_xrefs = 0
+    disasm_funcs = 0
+    entry_asm = []
+    discovered = []
+    if md is not None and arch in {"x86-64", "arm64"}:
+        for func in kept:
+            if budget[0] >= MAX_INSNS:
+                limitations.append("Instruction budget reached; later functions were not disassembled.")
+                break
+            _disassemble(md, arch, func, sections, plt, strings, names, budget)
+            disasm_funcs += 1
+            blocks += func["blocks"]
+            cfg_edges += func["cfg_edges"]
+            indirect += func["indirect_calls"]
+            string_xrefs += func["string_xref_count"]
+            constant_xrefs += func["constant_xref_count"]
+            for callee in func["callees"]:
+                call_edges += 1
+                if callee["kind"] == "import":
+                    import_edges += 1
+                elif callee["kind"] == "direct":
+                    addr = int(callee["address"], 16)
+                    if addr not in funcs and len(discovered) < MAX_NEW_FUNCS:
+                        discovered.append(addr)
+            if func["address"] == entry:
+                entry_asm = func["assembly"]
+        if not entry_asm and entry:
+            raw = _bytes_at(sections, entry, 64)
+            if raw:
+                entry_asm = ["%s: %s %s" % (_hex(insn.address), insn.mnemonic, insn.op_str)
+                             for insn in list(md.disasm(raw, entry))[:12]]
+        # Second pass: call targets that were not already functions.
+        known = {f["address"] for f in kept}
+        exec_ranges = [(s["va"], s["va"] + len(s["raw"])) for s in sections if s["executable"] and s["raw"]]
+        for addr in discovered:
+            if addr in known or budget[0] >= MAX_INSNS:
+                continue
+            if not any(a <= addr < b for a, b in exec_ranges):
+                continue
+            if any(f["address"] <= addr < f["address"] + f["size"] for f in kept):
+                continue
+            func = {"address": addr, "size": 256, "origin": "call-target", "name": names.get(addr, ""), "size_approximate": True}
+            _disassemble(md, arch, func, sections, plt, strings, names, budget)
+            kept.append(func)
+            known.add(addr)
+            disasm_funcs += 1
+            blocks += func["blocks"]
+            cfg_edges += func["cfg_edges"]
+    public = []
+    for func in kept:
+        name = func.get("name") or names.get(func["address"]) or ("entry" if func["address"] == entry else "sub_%x" % func["address"])
+        item = {"name": name, "address": _hex(func["address"]), "size": func["size"], "origin": func["origin"],
+                "instructions": func.get("instructions", 0), "blocks": func.get("blocks", 0),
+                "signature": func.get("signature"), "callees": [
+                    {"kind": c["kind"], "name": c.get("name") or "", "address": c.get("address")} for c in func.get("callees", [])],
+                "string_xrefs": func.get("string_xrefs", []), "constant_xrefs": func.get("constant_xrefs", [])}
+        if func.get("size_approximate"):
+            item["size_approximate"] = True
+        public.append(item)
+    named = sum(1 for f in public if not f["name"].startswith("sub_"))
+    return {"kind": "native-binary", "format": str(binary.format).split(".")[-1], "arch": arch,
+            "imagebase": _hex(_imagebase(binary)), "entrypoint": _hex(entry) if entry else None, "entry_assembly": entry_asm,
+            "sections": [{"name": s["name"], "va": _hex(s["va"]), "size": s["size"], "executable": s["executable"]} for s in sections],
+            "imports": _imports(binary), "exports": _exports(binary, names), "plt": len(plt),
+            "functions": {"count": len(public), "discovered": discovered_count, "named": named,
+                          "disassembled": disasm_funcs, "truncated": truncated_funcs,
+                          "origins": {k: sum(1 for f in public if f["origin"] == k) for k in sorted({f["origin"] for f in public})}},
+            "cfg": {"blocks": blocks, "edges": cfg_edges},
+            "call_graph": {"edges": call_edges, "import_edges": import_edges, "indirect_calls": indirect},
+            "strings": {"count": len(strings), "samples": _string_samples(strings)},
+            "xrefs": {"strings": string_xrefs, "constants": constant_xrefs},
+            "instructions": budget[0],
+            "functions_detail": public,
+            "limitations": limitations + [
+                "Function signatures are inferred from the ABI registers read before the first call. They are not DWARF types.",
+                "The file was not executed.",
+            ]}

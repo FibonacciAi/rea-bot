@@ -45,7 +45,7 @@ flowchart LR
 <p align="center"><img src="assets/flow.png" alt="How Lostwax works: study, spec, rebuild, side-by-side, proof" width="100%"></p>
 
 1. **Acquire.** For an npm package, a git commit or an HTTPS page, `acquire` fetches the bytes itself: registry SHA-512 and no lifecycle scripts, one commit with hooks off, or static HTML and same-origin assets. Page scripts are saved and not executed. Private and link-local addresses are refused. A local directory is used as-is.
-2. **Understand.** Routes the target, takes a bounded static inventory, and can list symbols in one file (`scope`) without returning source. Shipped JavaScript, Electron, binaries, archives, .NET and wasm still need real REA engine evidence.
+2. **Understand.** Routes the target, takes a bounded static inventory, and can list symbols in one file (`scope`) without returning source. `analyze` is Lostwax's own engine for ELF, PE and Mach-O (x86-64 and arm64 disassembly, control flow, call graph, xrefs), wasm, JavaScript source maps, archives, asar and .NET CIL. It does not execute the target. The optional REA engine remains available when an external decompiler or WABT/Wakaru is installed.
 3. **Rebuild.** Turns the evidence into a small, digest-pinned capability matrix (SPEC.md). `harness` writes a JSON, CLI or HTML adapter for one JavaScript or Python export and does not run it. `cases` expands a seeded input grid. The bot builds and tests the rebuild in your workspace.
 4. **Prove.** `diff` runs the original (only after you approve its exact digest) and the rebuild on identical cases. Protocols are JSON values, CLI exit code plus stdout, or normalized HTML visible text. Mismatch evidence records both sides. Passes are marked *runner-attested*, and claims typed in by hand can't override them. `report` writes SCORECARD.md. Global parity always stays "unknown": a finite pass is never sold as "the whole product matches".
 
@@ -63,7 +63,7 @@ flowchart LR
 }
 ```
 
-Needs Python 3.10+ and Node for running JavaScript originals. No other dependencies.
+Needs Python 3.10+ and Node for running JavaScript originals. No other dependencies. The native engine is opt-in (`rea-bot native setup`) and needs Python >= 3.12 for its pinned wheels.
 
 ## Example prompts
 
@@ -91,7 +91,9 @@ python3 $P/bin/rea-bot inspect <run>
 python3 $P/bin/rea-bot scope <run> --path package/index.js --symbol default
 python3 $P/bin/rea-bot harness <run> --entry package/index.js --symbol default --out /abs/adapter.mjs
 python3 $P/bin/rea-bot cases --input grid.json --out cases.json
-python3 $P/bin/rea-bot engine status                     # optional REA engine
+python3 $P/bin/rea-bot native status                 # optional native engine (plan)
+python3 $P/bin/rea-bot analyze <run>                 # disassembly, wasm, JS, archives; does not execute
+python3 $P/bin/rea-bot engine status                 # optional REA engine
 python3 $P/bin/rea-bot prepare <run> --input build.json
 python3 $P/bin/rea-bot pin /abs/path/to/original         # digest to approve
 python3 $P/bin/rea-bot diff <run> --cases cases.json --reconstruction "python3 rebuild/adapter.py" \
@@ -116,7 +118,11 @@ Runs are saved in `/workspace/rea-bot-runs/<run>/` (set `REA_BOT_HOME` to change
 
 - `skills/rebuild` (`rea-bot-rebuild`): the full understand / rebuild / prove workflow.
 - `skills/parity-recheck` (`rea-bot-parity-recheck`): a scheduled re-check that flags regressions and tampered evidence.
-- `mcp.json` starts `server/mcp_server.py` (stdio, Python 3.10+, no dependencies) with 17 `rea_*` tools. The five added in 0.4.0 are `rea_acquire`, `rea_scope`, `rea_harness`, `rea_cases` and `rea_report`. The engine's 207 tools sit behind `rea_engine_tools` / `rea_engine_call`, so hosts that cut off long tool lists still see everything.
+- `mcp.json` starts `server/mcp_server.py` (stdio, Python 3.10+, no dependencies) with 20 `rea_*` tools. 0.5.0 adds `rea_native_status`, `rea_native_setup` and `rea_analyze`. The engine's 207 tools sit behind `rea_engine_tools` / `rea_engine_call`, so hosts that cut off long tool lists still see everything.
+
+## Native engine
+
+`rea-bot native setup` prints the pinned wheels. `--apply --approve-source lostwax-native@1` downloads them, checks SHA-256, and installs with `pip --target --no-deps` under `REA_BOT_NATIVE_HOME` (default `/workspace/.rea-bot-native`). Then `rea-bot analyze <run>` writes `native/summary.json`, `native/detail.json` and `native/build.json`. When a wasm export surface is pointer-free, it also writes a harness and cases. Running that harness is a `diff` with `--approve-original` equal to the wasm digest. Head-to-head numbers are in [docs/BENCHMARK.md](docs/BENCHMARK.md).
 
 ## Optional REA engine
 
@@ -145,7 +151,7 @@ These stay outside the score:
 ## Tests
 
 ```sh
-python3 -m unittest discover -s tests -t .      # 49 tests; engine e2e runs when the engine is staged, live tests when the registry is reachable
+python3 -m unittest discover -s tests -t .      # engine e2e runs when the engine is staged; live tests when the registry or the native targets are reachable
 ```
 
 See [REVIEWER-TESTING.md](REVIEWER-TESTING.md), [NOTICE.md](NOTICE.md), [CHANGELOG.md](CHANGELOG.md).
