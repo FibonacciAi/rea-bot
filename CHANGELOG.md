@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.0
+Milestone 1 of Lostwax's own decompiler. Ghidra stays an optional oracle and an optional backend.
+- `rea_bot/native/decompile.py` versions registers and stack slots for x86-64 and arm64, copy-propagates spills, and structures one `if` or one `while`. Functions with calls, or more than 80 instructions, stay on the structural lift.
+- `similarity` reports a whole-text token score and a return-line score against a reference, including Ghidra when the pinned install is present. On `add`, the full-text score against Ghidra is 0.417 and the x86-64 return score is 0.833.
+- The plan and the later milestones are in `docs/DECOMPILER.md`.
+
 ## 0.7.0
 Opt-in Ghidra decompiler, driven by Lostwax. The default install stays dependency-free. REA stays an optional backend and is not on this path.
 - `rea-bot ghidra setup` plans the pinned Ghidra 12.1.4 zip. `--apply --approve-source lostwax-ghidra@12.1.4` downloads it, checks SHA-256, and extracts it under `REA_BOT_GHIDRA_HOME`. An existing `GHIDRA_INSTALL_DIR` is used only when `Ghidra/application.properties` matches that pin. Java 21 is required and is not installed by the command. A missing Java or a mismatched tree is an error for `--decompiler ghidra` and a recorded fallback for `--decompiler auto`.

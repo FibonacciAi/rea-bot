@@ -4,12 +4,14 @@ Disassembly and control flow are native (Capstone) for x86-64, x86-32, arm64 and
 Function bounds come from .eh_frame, the PE exception directory, Mach-O function starts,
 symbols, and direct call targets. Import stubs are named for ELF, PE and Mach-O.
 DWARF parameter names are written into the lifted body. PDB records are read when present.
+On x86-64 and arm64, a function with no calls may be structured by the milestone 1 decompiler.
 Nothing is executed.
 """
 import struct
 import time
 
 from . import dwarf, ehframe, lift, pdb
+from .decompile import decompile_function
 from .runtime import activate
 
 _CFG_ARCH = {"x86-64", "arm64", "x86", "arm"}
@@ -762,7 +764,13 @@ def _disassemble(md, arch, func, sections, plt, strings, names, budget, lift_lef
     asm = ["%s: %s %s" % (_hex(insn.address), insn.mnemonic, insn.op_str) for insn in insns[:12]]
     pseudo = []
     if lift_left[0] > 0 and insns:
-        pseudo = lift.lift(md, insns, arch)
+        structured = None
+        if arch in {"x86-64", "arm64"}:
+            try:
+                structured = decompile_function(md, insns, arch)
+            except Exception:
+                structured = None
+        pseudo = structured if structured else lift.lift(md, insns, arch)
         if pseudo:
             lift_left[0] -= 1
     func.update({"instructions": len(insns), "blocks": flow["blocks"], "cfg_edges": flow["edges"],

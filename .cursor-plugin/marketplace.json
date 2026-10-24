@@ -3,7 +3,7 @@
   "owner": {"name": "FibonacciAi"},
   "metadata": {
     "description": "Lostwax: study any app, rebuild the part you want, and prove the copy matches.",
-    "version": "0.7.0"
+    "version": "0.8.0"
   },
   "plugins": [
     {
