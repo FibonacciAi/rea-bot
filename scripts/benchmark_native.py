@@ -213,20 +213,27 @@ def _elf(root):
     return next(p for p in root.rglob("*") if p.is_file() and p.read_bytes()[:4] == b"\x7fELF")
 
 
+def _add(rows, row):
+    rows.append(row)
+    print(json.dumps({"done": row["target"], "lostwax_seconds": row.get("lostwax_seconds"),
+                      "rea_seconds": row.get("rea_seconds"),
+                      "rea": (row.get("rea") or {}).get("text", "")[:300]}, ensure_ascii=False), flush=True)
+
+
 def main():
     backends = _backends()
     rows = []
     with tempfile.TemporaryDirectory(prefix="lw-bench-") as tmp:
         tmp = Path(tmp)
         os.environ["REA_BOT_HOME"] = str(tmp / "runs")
-        rows.append(_timed_binary("/bin/ls ELF x86-64", Path("/bin/ls"), "static; file not executed"))
+        _add(rows, _timed_binary("/bin/ls ELF x86-64", Path("/bin/ls"), "static; file not executed"))
 
         hello_deb = TARGETS / "hello_arm64.deb"
         if hello_deb.is_file():
             dest = tmp / "hello-arm64"
             archive.unpack(hello_deb, dest)
-            rows.append(_timed_binary("hello arm64 ELF from hello_arm64.deb", _elf(dest),
-                                      "static; dynamically linked; file not executed"))
+            _add(rows, _timed_binary("hello arm64 ELF from hello_arm64.deb", _elf(dest),
+                                     "static; dynamically linked; file not executed"))
 
         for label, path in (
             ("compiled x86-32", Path("/tmp/ops32")),
@@ -235,19 +242,19 @@ def main():
             ("gcc -g dwarf ELF", Path("/tmp/dwarf.bin")),
         ):
             if path.is_file():
-                rows.append(_timed_binary(label, path, "built on this machine; file not executed"))
+                _add(rows, _timed_binary(label, path, "built on this machine; file not executed"))
 
         if (TARGETS / "ripgrep-14.1.1-aarch64-unknown-linux-gnu.tar.gz").is_file():
             dest = tmp / "rg-elf"
             archive.unpack(TARGETS / "ripgrep-14.1.1-aarch64-unknown-linux-gnu.tar.gz", dest)
-            rows.append(_timed_binary("ripgrep 14.1.1 ELF arm64", _elf(dest), "static; file not executed"))
+            _add(rows, _timed_binary("ripgrep 14.1.1 ELF arm64", _elf(dest), "static; file not executed"))
 
         pe_arc = TARGETS / "ripgrep-14.1.1-x86_64-pc-windows-msvc.zip"
         if pe_arc.is_file():
             dest = tmp / "rg-pe"
             archive.unpack(pe_arc, dest)
-            rows.append(_timed_binary("ripgrep 14.1.1 PE x86-64", next(dest.rglob("*.exe")),
-                                      "static; file not executed"))
+            _add(rows, _timed_binary("ripgrep 14.1.1 PE x86-64", next(dest.rglob("*.exe")),
+                                     "static; file not executed"))
 
         macho_arc = TARGETS / "ripgrep-14.1.1-aarch64-apple-darwin.tar.gz"
         if macho_arc.is_file():
@@ -255,7 +262,7 @@ def main():
             archive.unpack(macho_arc, dest)
             macho = next(p for p in dest.rglob("*") if p.is_file() and p.stat().st_size > 1_000_000
                          and p.read_bytes()[:4] in {b"\xfe\xed\xfa\xcf", b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe"})
-            rows.append(_timed_binary("ripgrep 14.1.1 Mach-O arm64", macho, "static; file not executed"))
+            _add(rows, _timed_binary("ripgrep 14.1.1 Mach-O arm64", macho, "static; file not executed"))
 
         if CRC_JS.is_file():
             started = time.perf_counter()
@@ -278,7 +285,7 @@ def main():
             parsed = parse_wasm(blob) if blob[:4] == b"\x00asm" else {}
             rea = _rea(run["run"], [{"tool": "inspect_wasm_artifact", "arguments": {
                 "path": module or str(CRC_JS), "detail": "summary"}}])
-            rows.append({"target": "hash-wasm CRC-32",
+            _add(rows, {"target": "hash-wasm CRC-32",
                          "lostwax": {"callable": summary["surface"]["callable"], "cases": summary["cases"],
                                      "scripts_executed": summary["scripts_executed"],
                                      "wasm_exports": len(parsed.get("exports") or []),
@@ -301,7 +308,7 @@ def main():
                     "path": str(js_dir / preact.name), "output_directory": str(tmp / "wakaru-out"),
                     "extraction_mode": "structural", "rewrite_level": "minimal"}},
             ])
-            rows.append({"target": "preact 10.24.3 module + source map",
+            _add(rows, {"target": "preact 10.24.3 module + source map",
                          "lostwax": {"source_map_modules_with_content": (report.get("source_map") or {}).get("sources_with_content"),
                                      "scripts_executed": report["scripts_executed"]},
                          "lostwax_seconds": seconds, "rea": rea, "proof": "modules recovered, not executed"})
@@ -314,7 +321,7 @@ def main():
             seconds = round(time.perf_counter() - started, 2)
             run = api.new(str(deb), "bench-deb")["run"]
             rea = _rea(run, [{"tool": "open_binary", "arguments": {"path": str(deb)}}])
-            rows.append({"target": "hello 2.10-3 amd64.deb",
+            _add(rows, {"target": "hello 2.10-3 amd64.deb",
                          "lostwax": {"kinds": [a["kind"] for a in info["archives"]], "files": info["file_count"],
                                      "nested": len(info["nested"]), "elf_members": len(elves),
                                      "scripts_executed": info.get("scripts_executed", False)},
@@ -352,8 +359,8 @@ def main():
                 {"tool": "inspect_managed_artifact", "arguments": {"path": str(analyzed), "detail": "summary"}},
                 {"tool": "inspect_managed_members", "arguments": {"path": str(analyzed), "detail": "summary"}},
             ])
-            rows.append({"target": "Newtonsoft.Json 13.0.3", "lostwax": lost, "lostwax_seconds": seconds,
-                         "rea": rea, "proof": "not executed; C# text is a stack lift"})
+            _add(rows, {"target": "Newtonsoft.Json 13.0.3", "lostwax": lost, "lostwax_seconds": seconds,
+                        "rea": rea, "proof": "not executed; C# text is a stack lift"})
 
         for label, path in (("NSIS installer", Path("/tmp/sample-nsis.exe")), ("MSI installer", Path("/tmp/sample.msi"))):
             if not path.is_file():
@@ -364,10 +371,10 @@ def main():
             names = [Path(str(item)).name for item in (info.get("files") or [])[:8]]
             run = api.new(str(path), _run_id(label))["run"]
             rea = _rea(run, [{"tool": "open_binary", "arguments": {"path": str(path)}}])
-            rows.append({"target": label, "lostwax": {"files": info.get("file_count"), "kinds": [a["kind"] for a in info.get("archives") or []],
-                                                      "member_names": names,
-                                                      "scripts_executed": info.get("scripts_executed", False)},
-                         "lostwax_seconds": seconds, "rea": rea, "proof": "unpacked, members not executed"})
+            _add(rows, {"target": label, "lostwax": {"files": info.get("file_count"), "kinds": [a["kind"] for a in info.get("archives") or []],
+                                                     "member_names": names,
+                                                     "scripts_executed": info.get("scripts_executed", False)},
+                        "lostwax_seconds": seconds, "rea": rea, "proof": "unpacked, members not executed"})
 
     payload = {"backends": backends, "rows": rows}
     OUT.parent.mkdir(exist_ok=True)
