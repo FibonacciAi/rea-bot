@@ -32,8 +32,8 @@ bash scripts/e2e_capabilities.sh
 
 This acquires real targets and prints JSON. Expect:
 
-- `npm:ms@2.1.3`: `scripts_executed` false, an integrity string, scope symbol `default`. The naive year length mismatches; the fixed slice matches every case; parity label `declared-features-match`; `global_parity` is `unknown`.
-- `npm:semver@7.6.3` with `--protocol cli`: the naive CLI mismatches `inc-major` and `bad-leading-zero`; the fixed slice matches 8/8.
+- `npm:ms@2.1.3`: `scripts_executed` false, an integrity string, scope symbol `default`. The naive year length is 23/25, mismatches `parse-008` (`1y`) and `parse-015` (`1 year`): original `31557600000`, reconstruction `31536000000`. The fixed slice is 25/25. That `diff` label is `cases-match` until `parity` runs. After `parity`, the label is `declared-features-match`, 3/3 runner-attested, and `global_parity` is `unknown`.
+- `npm:semver@7.6.3` with `--protocol cli`: the naive CLI is 4/8 and mismatches `inc-major`, `inc-minor`, `inc-patch` and `bad-leading-zero`. `echo-plain` matches. The fixed slice matches 8/8.
 - `https://example.com`: `scripts_executed` false. `--protocol html` matches the hand-written page's visible text. `--protocol cli --compare text` does not match, because the markup differs.
 - `https://github.com/vercel/ms` at commit `4ff48cec099f0514c3e9bbca18706c9c21122bfb`: commit pinned, hooks not run, `scope` of `src/index.ts` names `ms` and `parse`. That checkout is not executed.
 

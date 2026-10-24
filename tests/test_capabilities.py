@@ -249,7 +249,8 @@ class ScopeHarnessAndDiff(TempHome):
         del ledger['cases']['b2']
         store.write_json(store.Run('inc').dir / 'ledger.json', ledger)
         resumed = api.diff('inc', str(path), ['python3', str(recon)], ['python3', str(orig)], str(orig), pin, 10, None, None, False, True)
-        self.assertEqual(resumed['executed_case_ids'] if 'executed_case_ids' in resumed else resumed['cases'], 1)
+        self.assertEqual(resumed['executed_case_ids'], ['b2'])
+        self.assertEqual(resumed['cases'], 1)
         self.assertEqual(resumed['cumulative']['cases'], 3)
         orig.write_text('import json,sys\njson.dump(1, sys.stdout)\n')
         with self.assertRaisesRegex(ValueError, 'changed'):
