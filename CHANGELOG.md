@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.12.0
+The owned decompiler beats stock Ghidra 12.1.4 on the `/bin/ls` and ripgrep readability targets below. Ghidra remains an optional backend. Global parity stays unknown.
+- A conditional branch with no flags of its own is copied once per predecessor when those compares disagree, and each edge keeps its condition. A copied region whose condition is missing stays a `goto`. A constant `0` or `1` condition keeps the live arm. `ccmp`, `ccmn`, `fcmp`, and `bics` record flags.
+- Each PLT stub is its own function. A named GOT slot is `name();`. An approximate function is split after `ret` or `udf` padding when an earlier branch in that range does not target the cut and the range has at most eight cuts. eh_frame ranges stay whole. A NUL-terminated string may contain a newline or a tab; that pass runs only while the string cap has room.
+- On `/bin/ls`, native text is 509 functions, 728 gotos (1.43 each; stock 1.77), 37 in `main` (stock 43), 1,070 unnamed tokens (stock 5,694), 1 address literal (stock 2,374), 8,144 lines, about 2.4 seconds. Strings are 536 against the earlier 492. `if (1)` does not occur. `sub_174a0` still has 134 gotos, `sub_127a0` 104, `sub_14790` 80, and `sub_cb80` 51.
+- On ripgrep 14.1.1 ELF arm64, 7,463 functions have text (stock lists 7,386; a recount this run is 7,388), 1.06 gotos each (stock 2.46), no `if (1)`, 82 address literals, in about 94 seconds (stock about 300). Unnamed tokens stay under stock.
+- Readability tables and the scorecard are in `docs/DECOMPILER.md`.
+
 ## 0.11.0
 The owned decompiler follows more joins, prints real flag conditions, and drops dead stores. Ghidra remains an optional backend. Global parity stays unknown.
 - A multi-entry post-dominator is the follow of an `if` when that `if` does not dominate it. A small already-emitted return tail with no unnamed tokens is duplicated. An irreducible loop extends to the nodes that can return to its header, up to 400. A standalone `goto` whose target is the next emitted block is dropped.

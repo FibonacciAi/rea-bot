@@ -453,6 +453,30 @@ def _strings(sections):
                     i = j + 1
                     continue
             i += 1
+    if len(found) >= MAX_STRINGS:
+        return found
+    # A C string may contain a newline or a tab. Collected after the plain
+    # scan so a binary that already hit the cap keeps the same strings.
+    for sec in sections:
+        name = sec["name"]
+        if sec["executable"] or not sec["raw"] or not sec["va"]:
+            continue
+        if name in _SKIP_STRINGS or name.startswith(".debug") or name.startswith(".note") or name.startswith(".gnu_debug"):
+            continue
+        raw = sec["raw"]
+        i = 0
+        while i < len(raw) and len(found) < MAX_STRINGS:
+            if raw[i] in (9, 10) or 32 <= raw[i] < 127:
+                j = i
+                while j < len(raw) and (raw[j] in (9, 10) or 32 <= raw[j] < 127):
+                    j += 1
+                body = raw[i:j]
+                if (2 <= len(body) <= 240 and j < len(raw) and raw[j] == 0
+                        and (9 in body or 10 in body)):
+                    found.append((sec["va"] + i, body.decode("ascii")))
+                    i = j + 1
+                    continue
+            i += 1
     return found
 
 
@@ -748,11 +772,21 @@ def _lookup_string(strings, addr):
 
 
 def _disassemble(md, arch, func, sections, plt, strings, names, budget, lift_left, convention):
-    raw = _bytes_at(sections, func["address"], func["size"])
-    if not raw:
+    # A GOT slot holds an address, not instructions. Ghidra still counts the import.
+    if func.get("origin") == "import" and func.get("name"):
         func.update({"instructions": 0, "blocks": 0, "cfg_edges": 0, "callees": [], "callee_count": 0,
                      "import_count": 0, "indirect_calls": 0, "string_xrefs": [], "string_xref_count": 0,
-                     "constant_xrefs": [], "constant_xref_count": 0, "assembly": [], "signature": None})
+                     "constant_xrefs": [], "constant_xref_count": 0, "assembly": [], "signature": None,
+                     "pseudocode": ["%s();" % func["name"]]})
+        return 0
+    raw = _bytes_at(sections, func["address"], func["size"])
+    if not raw:
+        name = func.get("name") or ""
+        pseudo = ["%s();" % name] if func.get("origin") == "import" and name else []
+        func.update({"instructions": 0, "blocks": 0, "cfg_edges": 0, "callees": [], "callee_count": 0,
+                     "import_count": 0, "indirect_calls": 0, "string_xrefs": [], "string_xref_count": 0,
+                     "constant_xrefs": [], "constant_xref_count": 0, "assembly": [], "signature": None,
+                     "pseudocode": pseudo})
         return 0
     insns = []
     for insn in md.disasm(raw, func["address"]):
@@ -823,6 +857,162 @@ def _disassemble(md, arch, func, sections, plt, strings, names, budget, lift_lef
                  "signature": sig, "assembly": asm, "calls": flow["calls"], "tails": flow.get("tails") or [],
                  "pseudocode": pseudo})
     return len(insns)
+
+
+def _stub_ranges(sections, arch):
+    """(.plt, .plt.sec, .plt.got, .init, .fini) as separate functions.
+
+    Stock Ghidra counts each import stub. The two PLT layouts on x86-64
+    (.plt and .plt.sec) are both real code, so both are kept.
+    """
+    found = []
+    for sec in sections:
+        if sec["name"] not in {".plt", ".plt.sec", ".plt.got", ".init", ".fini"} or not sec["raw"]:
+            continue
+        raw = bytes(sec["raw"])
+        base = sec["va"]
+        origin = "init" if sec["name"] in {".init", ".fini"} else "plt"
+        if sec["name"] in {".init", ".fini"}:
+            found.append((base, len(raw), origin))
+            continue
+        starts = []
+        if arch == "x86-64":
+            token = b"\xf3\x0f\x1e\xfa"
+            if not raw.startswith(token):
+                starts.append(0)
+            idx = 0
+            while True:
+                hit = raw.find(token, idx)
+                if hit < 0:
+                    break
+                starts.append(hit)
+                idx = hit + 4
+        elif arch == "arm64":
+            # Stubs are 16-byte aligned and start with adrp.
+            for off in range(0, len(raw) - 3, 16):
+                word = int.from_bytes(raw[off:off + 4], "little")
+                if (word & 0x9F000000) == 0x90000000:
+                    starts.append(off)
+        if not starts:
+            found.append((base, len(raw), origin))
+            continue
+        starts = sorted(set(starts))
+        for index, off in enumerate(starts):
+            nxt = starts[index + 1] if index + 1 < len(starts) else len(raw)
+            size = nxt - off
+            if size >= 4:
+                found.append((base + off, size, origin))
+    return found
+
+
+def _pointer_targets(binary, sections):
+    """Code addresses stored in init arrays and relative relocations.
+
+    A target inside a function we already have is a jump-table slot or a
+    mid-function label, not a new function. Only addresses in executable
+    gaps are returned.
+    """
+    import struct
+    targets = []
+    for sec in sections:
+        if sec["name"] not in {".init_array", ".fini_array", ".preinit_array"} or not sec["raw"]:
+            continue
+        raw = bytes(sec["raw"])
+        for off in range(0, len(raw) - 7, 8):
+            targets.append(struct.unpack_from("<Q", raw, off)[0])
+    try:
+        rels = list(getattr(binary, "relocations", []) or [])
+    except Exception:
+        rels = []
+    for rel in rels:
+        if "RELATIVE" not in str(getattr(rel, "type", "")):
+            continue
+        addend = int(getattr(rel, "addend", 0) or 0)
+        if addend:
+            targets.append(addend & 0xFFFFFFFFFFFFFFFF)
+    return targets
+
+
+def _gap_code(sections, kept, arch):
+    """Small uncovered executable spans whose first instruction is real code.
+
+    A one-instruction pad of nop or udf is not a function. Spans larger than
+    2 KiB are tails of a function we already entered, not a new one.
+    """
+    md = _cs(arch)
+    if md is None:
+        return []
+    found = []
+    for sec in sections:
+        if not sec["executable"] or not sec["raw"] or sec["name"] in {".plt", ".plt.sec", ".plt.got"}:
+            continue
+        raw = bytes(sec["raw"])
+        lo, hi = sec["va"], sec["va"] + len(raw)
+        covered = sorted((func["address"], func["address"] + func["size"]) for func in kept
+                         if lo <= func["address"] < hi)
+        cur = lo
+        gaps = []
+        for start, end in covered:
+            start, end = max(start, lo), min(end, hi)
+            if start > cur:
+                gaps.append((cur, start))
+            cur = max(cur, end)
+        if cur < hi:
+            gaps.append((cur, hi))
+        for gap_lo, gap_hi in gaps:
+            size = gap_hi - gap_lo
+            if size < 8 or size > 65536:
+                continue
+            off = gap_lo - lo
+            insns = list(md.disasm(raw[off:gap_hi - lo], gap_lo))
+            if not insns:
+                continue
+            starts = []
+            for index, insn in enumerate(insns):
+                if insn.mnemonic in {"nop", "udf", "int3"} or insn.mnemonic.startswith("nop"):
+                    continue
+                if not starts:
+                    starts.append(insn.address)
+                    continue
+                # Inside a large uncovered span, a ret ends a routine. The
+                # following instruction is not a block in a function we have.
+                if size > 2048 and index and insns[index - 1].mnemonic == "ret":
+                    starts.append(insn.address)
+            for index, addr in enumerate(starts):
+                nxt = starts[index + 1] if index + 1 < len(starts) else gap_hi
+                if nxt - addr >= 8:
+                    found.append((addr, nxt - addr))
+    return found
+
+
+def _endbr_gaps(sections, kept):
+    """CET function entries sitting in padding between known functions."""
+    token = b"\xf3\x0f\x1e\xfa"
+    found = []
+    for sec in sections:
+        if not sec["executable"] or not sec["raw"] or sec["name"] in {".plt", ".plt.sec", ".plt.got"}:
+            continue
+        raw = bytes(sec["raw"])
+        idx = 0
+        while True:
+            hit = raw.find(token, idx)
+            if hit < 0:
+                break
+            addr = sec["va"] + hit
+            if not any(func["address"] <= addr < func["address"] + func["size"] for func in kept):
+                found.append(addr)
+            idx = hit + 4
+    return found
+
+
+def _place(kept, addr, size, origin, name):
+    if addr in {func["address"] for func in kept}:
+        return False
+    if any(func["address"] <= addr < func["address"] + func["size"] for func in kept):
+        return False
+    kept.append({"address": addr, "size": size, "origin": origin, "name": name,
+                 "size_approximate": origin not in {"plt", "init", "import"}})
+    return True
 
 
 def _merge(funcs, addr, size, origin, name=""):
@@ -969,6 +1159,90 @@ def _arm64_gap_prologues(sections, funcs, md):
     return found
 
 
+_BOUNDARY_ORIGIN = {"prologue", "gap", "entry", "symbol", "call-target"}
+
+
+def _direct_branch_target(insn, lo, hi):
+    """Immediate target of a direct branch or call that lands inside [lo, hi)."""
+    mnem = insn.mnemonic
+    if mnem in {"ret", "retn", "br", "blr"} or mnem.startswith("nop"):
+        return None
+    branched = (mnem in {"b", "bl", "jmp", "call", "cbz", "cbnz", "tbz", "tbnz"}
+                or mnem.startswith("b.") or (mnem.startswith("j") and mnem != "jmp"))
+    if not branched:
+        return None
+    for op in reversed(list(insn.operands)):
+        if op.type == 2 and lo <= int(op.imm) < hi:
+            return int(op.imm)
+    return None
+
+
+def _split_boundaries(sections, kept, arch):
+    """Split an approximate function at code that follows ret or udf padding.
+
+    eh_frame sizes stay whole. A prologue or gap scan can run into the next
+    routine when that routine has no frame prologue. A cut that an earlier
+    instruction in the same range branches to is still that function. A range
+    with many cuts is left whole: that shape is a jump table, not padding.
+    """
+    md = _cs(arch)
+    if md is None:
+        return
+    added = []
+    for func in kept:
+        if func.get("origin") not in _BOUNDARY_ORIGIN or func["size"] < 16:
+            continue
+        raw = _bytes_at(sections, func["address"], func["size"])
+        if len(raw) < 16:
+            continue
+        insns = list(md.disasm(raw, func["address"]))
+        if len(insns) < 4:
+            continue
+        end = func["address"] + func["size"]
+        targets = []
+        for insn in insns:
+            target = _direct_branch_target(insn, func["address"], end)
+            if target is not None:
+                targets.append((insn.address, target))
+        cuts = []
+        stopped = False
+        for insn in insns:
+            mnem = insn.mnemonic
+            if mnem in {"ret", "retn", "udf", "int3"}:
+                stopped = True
+                continue
+            if mnem == "nop" or mnem.startswith("nop"):
+                continue
+            if stopped and insn.address != func["address"]:
+                if any(src < insn.address and dst == insn.address for src, dst in targets):
+                    stopped = False
+                    continue
+                cuts.append(insn.address)
+            stopped = False
+        if not cuts or len(cuts) > 8:
+            continue
+        points = [func["address"]]
+        for cut in cuts:
+            if cut - points[-1] >= 4 and end - cut >= 4:
+                points.append(cut)
+        if len(points) < 2:
+            continue
+        points.append(end)
+        func["size"] = points[1] - points[0]
+        for index in range(1, len(points) - 1):
+            added.append({"address": points[index], "size": points[index + 1] - points[index],
+                          "origin": "boundary", "name": "", "size_approximate": True})
+    if added:
+        known = {func["address"] for func in kept}
+        for func in added:
+            if func["address"] in known:
+                continue
+            if any(other["address"] < func["address"] < other["address"] + other["size"] for other in kept):
+                continue
+            kept.append(func)
+            known.add(func["address"])
+
+
 def _one(binary, path=None):
     arch = _arch(binary)
     sections = _sections(binary)
@@ -1017,6 +1291,41 @@ def _one(binary, path=None):
                              "size_approximate": True})
                 known.add(addr)
             kept.sort(key=lambda f: f["address"])
+    # eh_frame often records a whole PLT section as one function. Ghidra counts
+    # each stub, and so do we. Drop the section-sized frame, then add the stubs.
+    plt_spans = [(sec["va"], sec["va"] + len(sec["raw"])) for sec in sections
+                 if sec["name"] in {".plt", ".plt.sec", ".plt.got"} and sec["raw"]]
+    kept = [func for func in kept
+            if not any(start <= func["address"] and func["address"] + func["size"] <= end
+                       for start, end in plt_spans)]
+    for addr, size, origin in _stub_ranges(sections, arch):
+        _place(kept, addr, size, origin, names.get(addr, ""))
+    if arch == "x86-64":
+        for addr in _endbr_gaps(sections, kept):
+            _place(kept, addr, 16, "endbr", names.get(addr, ""))
+    exec_ranges = [(sec["va"], sec["va"] + len(sec["raw"])) for sec in sections if sec["executable"] and sec["raw"]]
+    for addr in _pointer_targets(binary, sections):
+        if any(start <= addr < end for start, end in exec_ranges):
+            _place(kept, addr, 16, "pointer", names.get(addr, ""))
+    for addr, name in _got_names(binary).items():
+        if name:
+            _place(kept, addr, 8, "import", name)
+    kept.sort(key=lambda f: f["address"])
+    for index, func in enumerate(kept):
+        if not func.get("size_approximate"):
+            continue
+        nxt = kept[index + 1]["address"] if index + 1 < len(kept) else func["address"] + func["size"]
+        span = nxt - func["address"]
+        if 0 < span <= 4096:
+            func["size"] = span
+    for addr, size in _gap_code(sections, kept, arch):
+        _place(kept, addr, size, "gap", names.get(addr, ""))
+    kept.sort(key=lambda f: f["address"])
+    _split_boundaries(sections, kept, arch)
+    for func in kept:
+        if func.get("origin") == "boundary" and not func.get("name"):
+            func["name"] = names.get(func["address"], "")
+    kept.sort(key=lambda f: f["address"])
     discovered_count = len(kept)
     if len(kept) > MAX_FUNCTIONS:
         kept = kept[:MAX_FUNCTIONS]
@@ -1036,6 +1345,12 @@ def _one(binary, path=None):
         except Exception as err:
             plt = {}
             limitations.append("Import names were not recovered: " + str(err)[:180])
+        for func in kept:
+            if func.get("origin") == "plt" and not func.get("name"):
+                func["name"] = plt.get(func["address"], "")
+        for addr, name in _got_names(binary).items():
+            if name:
+                names.setdefault(addr, name)
     budget = [0]
     lift_left = None
     convention = convention_for(arch, binary.format)
@@ -1086,7 +1401,11 @@ def _one(binary, path=None):
                 continue
             if any(f["address"] <= addr < f["address"] + f["size"] for f in kept):
                 continue
-            func = {"address": addr, "size": 256, "origin": "call-target", "name": names.get(addr, ""), "size_approximate": True}
+            later = [item["address"] for item in kept if item["address"] > addr]
+            pending = [item for item in discovered if isinstance(item, int) and item > addr]
+            cap = min(later + pending + [addr + 256])
+            func = {"address": addr, "size": max(4, cap - addr), "origin": "call-target",
+                    "name": names.get(addr, ""), "size_approximate": True}
             _disassemble(md, arch, func, sections, plt, strings, names, budget, lift_left, convention)
             kept.append(func)
             known.add(addr)

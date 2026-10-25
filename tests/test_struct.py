@@ -163,6 +163,30 @@ class JoinPlacement(unittest.TestCase):
         self.assertIn("return x;", text)
         self.assertNotIn("goto", text)
 
+    def test_constant_false_arm_is_dropped(self):
+        text = _text([
+            {"start": 0, "kind": "if", "cond": "0 != 0", "succs": [1, 2], "stmts": []},
+            {"start": 1, "kind": "goto", "succs": [3], "stmts": ["x = 1;"]},
+            {"start": 2, "kind": "goto", "succs": [3], "stmts": ["x = 2;"]},
+            {"start": 3, "kind": "ret", "succs": [], "stmts": ["return x;"]},
+        ])
+        self.assertIn("x = 2;", text)
+        self.assertNotIn("x = 1;", text)
+        self.assertNotIn("goto", text)
+        self.assertNotIn("if (0", text)
+
+    def test_empty_fallthrough_is_not_a_goto_target(self):
+        text = _text([
+            {"start": 0, "kind": "if", "cond": "a", "succs": [1, 2], "stmts": []},
+            {"start": 1, "kind": "goto", "succs": [3], "stmts": ["x = 1;"]},
+            {"start": 2, "kind": "fall", "succs": [4], "stmts": []},
+            {"start": 4, "kind": "fall", "succs": [3], "stmts": []},
+            {"start": 3, "kind": "ret", "succs": [], "stmts": ["return x;"]},
+        ])
+        self.assertIn("x = 1;", text)
+        self.assertIn("return x;", text)
+        self.assertNotIn("goto", text)
+
     def test_constant_return_tail_is_duplicated(self):
         text = _text([
             {"start": 0, "kind": "if", "cond": "n > 0", "succs": [1, 3], "stmts": []},

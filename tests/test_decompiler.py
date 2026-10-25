@@ -255,3 +255,94 @@ class Arm64Call(unittest.TestCase):
             self.assertIn("(arg0 + arg1)", rendered)
             self.assertIn("(arg0 - arg1)", rendered)
             self.assertNotIn("if (1)", rendered)
+
+    def test_ccmp_and_fcmp_set_conditions(self):
+        source = (
+            ".text\n"
+            ".globl both\n"
+            "both:\n"
+            "  cmp w0, #1\n"
+            "  ccmp w1, #2, #0, eq\n"
+            "  b.eq 1f\n"
+            "  mov w0, #0\n"
+            "  ret\n"
+            "1:\n"
+            "  mov w0, #1\n"
+            "  ret\n"
+            ".globl zf\n"
+            "zf:\n"
+            "  fcmp d0, #0.0\n"
+            "  b.eq 2f\n"
+            "  mov w0, #0\n"
+            "  ret\n"
+            "2:\n"
+            "  mov w0, #1\n"
+            "  ret\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "ccmp.s"
+            src.write_text(source)
+            dest = Path(tmp) / "ccmp.o"
+            compiled = subprocess.run(
+                ["clang", "-target", "aarch64-linux-gnu", "-c", "-o", str(dest), str(src)],
+                capture_output=True, text=True)
+            if compiled.returncode != 0:
+                self.skipTest(compiled.stderr[-200:])
+            binary = lief.parse(str(dest))
+            text = next(section for section in binary.sections if str(section.name) == ".text")
+            md = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
+            md.detail = True
+            insns = list(md.disasm(bytes(text.content), int(text.virtual_address)))
+            split = next(insn.address for insn in insns if insn.mnemonic == "fcmp")
+            both = [insn for insn in insns if insn.address < split]
+            rendered = "\n".join(decompile_function(md, both, "arm64") or [])
+            self.assertNotIn("if (1)", rendered)
+            self.assertIn("== 2", rendered)
+            zf = [insn for insn in insns if insn.address >= split]
+            zf_text = "\n".join(decompile_function(md, zf, "arm64") or [])
+            self.assertNotIn("if (1)", zf_text)
+            self.assertIn("== 0", zf_text)
+
+    def test_flag_join_keeps_each_incoming_compare(self):
+        # Two compares reach one b.lo. Each edge keeps its own condition.
+        source = (
+            ".text\n"
+            ".globl joinflag\n"
+            "joinflag:\n"
+            "  cmp w0, #0\n"
+            "  b.eq 1f\n"
+            "  subs w3, w0, w1\n"
+            "  b.ne 2f\n"
+            "  b 3f\n"
+            "1:\n"
+            "  subs w3, w0, w2\n"
+            "  b.eq 3f\n"
+            "2:\n"
+            "  b.lo 4f\n"
+            "  mov w0, #1\n"
+            "  ret\n"
+            "4:\n"
+            "  mov w0, #2\n"
+            "  ret\n"
+            "3:\n"
+            "  mov w0, #0\n"
+            "  ret\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "join.s"
+            src.write_text(source)
+            dest = Path(tmp) / "join.o"
+            compiled = subprocess.run(
+                ["clang", "-target", "aarch64-linux-gnu", "-c", "-o", str(dest), str(src)],
+                capture_output=True, text=True)
+            if compiled.returncode != 0:
+                self.skipTest(compiled.stderr[-200:])
+            binary = lief.parse(str(dest))
+            text = next(section for section in binary.sections if str(section.name) == ".text")
+            md = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
+            md.detail = True
+            insns = list(md.disasm(bytes(text.content), int(text.virtual_address)))
+            rendered = "\n".join(decompile_function(md, insns, "arm64") or [])
+            self.assertNotIn("if (1)", rendered)
+            self.assertIn("arg0 < arg1", rendered)
+            self.assertIn("arg0 < arg2", rendered)

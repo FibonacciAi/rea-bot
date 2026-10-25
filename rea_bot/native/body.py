@@ -38,8 +38,10 @@ def decompile_body(md, insns, arch, parameters=None, names=None, strings=None, c
     if not blocks:
         return None
     by = {block["start"]: block for block in blocks}
+    _mark_tail_calls(blocks, names)
     _dataflow(blocks, by, arch, convention, names, strings, memory)
     _trim_switches(blocks, by)
+    _split_flag_joins(blocks, by)
     succs = {block["start"]: list(block["succs"]) for block in blocks}
     for block in blocks:
         for target in block.get("switch_targets") or []:
@@ -74,6 +76,30 @@ def decompile_body(md, insns, arch, parameters=None, names=None, strings=None, c
     if header:
         text = header + "\n" + text
     return drop_dead_stores([line for line in text.split("\n") if line.strip()])
+
+
+_THUNK_MNEM = {"endbr64", "endbr32", "nop", "jmp", "br", "adrp", "ldr", "add", "mov"}
+
+
+def _mark_tail_calls(blocks, names):
+    """An import stub's indirect jump is a call, not a goto."""
+    names = names or {}
+    for block in blocks:
+        if block.get("kind") != "ijmp":
+            continue
+        insns = block.get("insns") or []
+        if not insns:
+            continue
+        for op in insns[-1].get("ops") or []:
+            if op.get("k") == "mem" and op.get("abs") in names:
+                block["tail_call"] = names[op["abs"]]
+                break
+        if block.get("tail_call"):
+            continue
+        entry = insns[0].get("address")
+        if entry in names and len(insns) <= 8 and all(
+                str(item.get("mnem", "")).split()[-1] in _THUNK_MNEM for item in insns):
+            block["tail_call"] = names[entry]
 
 
 def _m(item):
@@ -317,6 +343,35 @@ def _exec(block, state, arch, convention, names, strings, memory):
         if mnem in {"cmp", "test"} and len(ops) >= 2:
             state["flags"] = {"k": mnem, "l": _rval(state, ops[0], strings), "r": _rval(state, ops[1], strings),
                               "bits": _op_bits(ops, arch)}
+            defined = True
+            continue
+        if mnem in {"fcmp", "fcmpe"} and ops:
+            # A floating immediate (#0.0) is not a capstone IMM operand.
+            if len(ops) >= 2 and ops[1]["k"] in {"reg", "imm"}:
+                right = _rval(state, ops[1], strings)
+            else:
+                right = "0"
+            state["flags"] = {"k": "cmp", "l": _rval(state, ops[0], strings), "r": right, "bits": 64}
+            defined = True
+            continue
+        if mnem in {"ccmp", "ccmn"} and len(ops) >= 2:
+            # Reached only when the condition holds, so the flags are the compare.
+            left = _rval(state, ops[0], strings)
+            right = _rval(state, ops[1], strings)
+            if mnem == "ccmp":
+                state["flags"] = {"k": "cmp", "l": left, "r": right, "bits": _op_bits(ops, arch)}
+            else:
+                state["flags"] = {"k": "add", "l": left, "r": right,
+                                  "res": "(%s + %s)" % (_num(left), _num(right)), "bits": _op_bits(ops, arch)}
+            defined = True
+            continue
+        if mnem == "bics" and ops and ops[0]["k"] == "reg" and len(ops) >= 2:
+            right = _rval(state, ops[-1], strings)
+            left = _rval(state, ops[-2], strings) if len(ops) >= 3 else _get(state, ops[0]["r"])
+            result = "(%s & ~(%s))" % (left, right)
+            if ops[0].get("r") not in {"wzr", "xzr"}:
+                _set(state, ops[0]["r"], result)
+            state["flags"] = {"k": "test", "l": result, "r": "0", "bits": _op_bits(ops, arch)}
             defined = True
             continue
         if mnem == "cmn" and len(ops) >= 2:
@@ -687,6 +742,58 @@ def _reg_bits(reg, arch):
     if _is32(reg):
         return 32
     return 64
+
+
+def _split_flag_joins(blocks, by):
+    """Copy a flagless branch once per predecessor when the compares disagree.
+
+    The branch tests NZCV left by the blocks that reach it. One expression cannot
+    name two different compares, and the branch itself has no statements, so each
+    copy is the condition for that edge alone.
+    """
+    succs = {block["start"]: list(block["succs"]) for block in blocks}
+    preds = _preds(succs)
+    fresh = []
+    drop = set()
+    for block in blocks:
+        if block.get("kind") != "if" or block.get("cond") or block.get("stmts"):
+            continue
+        if block.get("flags_local") or not block.get("insns"):
+            continue
+        incoming = preds.get(block["start"], [])
+        if len(incoming) < 2:
+            continue
+        conds = []
+        ready = True
+        for pred in incoming:
+            out = (by.get(pred) or {}).get("out")
+            cond = _cond(out, block["insns"][-1]) if isinstance(out, dict) else None
+            if not cond:
+                ready = False
+                break
+            conds.append(cond)
+        if not ready:
+            continue
+        if len(set(conds)) == 1:
+            block["cond"] = conds[0]
+            continue
+        for index, pred in enumerate(incoming):
+            # Above any ELF virtual address, so the copy is not a real instruction.
+            start = block["start"] + (index + 1) * 0x10000000000
+            copy = {"start": start, "insns": block["insns"], "kind": "if", "target": block.get("target"),
+                    "succs": list(block["succs"]), "stmts": [], "cond": conds[index], "switch": None,
+                    "switch_targets": [], "flags_local": True, "flag_join": True}
+            pred_block = by[pred]
+            pred_block["succs"] = [start if item == block["start"] else item for item in pred_block["succs"]]
+            fresh.append(copy)
+            by[start] = copy
+        drop.add(block["start"])
+    if not drop:
+        return
+    blocks[:] = [block for block in blocks if block["start"] not in drop]
+    blocks.extend(fresh)
+    for start in drop:
+        by.pop(start, None)
 
 
 def _propagate_flags(blocks, by):

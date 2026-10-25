@@ -25,6 +25,9 @@ def structure_function(entry, by, succs, dom, ipdom, loops):
     if entry not in by:
         return []
     succs = {node: [target for target in succs.get(node, []) if target in by] for node in by}
+    by, succs, entry = _collapse_empty(by, succs, entry)
+    if entry not in by:
+        return []
     preds = _preds(succs)
     dom = _dominators(entry, list(by), succs, preds)
     builder = _Structurer(entry, by, succs, dom, _ipdom(by, succs), _loops(succs, dom))
@@ -168,7 +171,10 @@ class _Structurer(object):
             self._emit_kids(node, barriers, ctx, depth)
             return
         if block.get("kind") == "ijmp":
-            self.emit_line("goto indirect;")
+            # A PLT stub is a tail jump through the GOT. Name it as a call so the
+            # stub is a real function without a goto.
+            tail = block.get("tail_call")
+            self.emit_line(("%s;" % tail) if tail else "goto indirect;")
             self._emit_kids(node, barriers, ctx, depth)
             return
         if len(targets) == 1:
@@ -222,6 +228,18 @@ class _Structurer(object):
         cond, then_n, else_n, consumed = self._fold(node)
         for extra in consumed:
             self.emitted.add(extra)
+        # Constant flags (a cleared overflow test) have one live arm. Emitting
+        # `if (0 != 0)` keeps a dead goto; the live arm is ordinary fallthrough.
+        if cond in {"0", "0 != 0", "1 == 0"} and else_n is not None:
+            self._realize(node, else_n, barriers, ctx, depth)
+            self._bury_dead(then_n, node)
+            self._after_if(self._follow(node, ctx), barriers, ctx, depth, consumed)
+            return
+        if cond in {"1", "0 == 0", "1 != 0", "1 == 1"}:
+            self._realize(node, then_n, barriers, ctx, depth)
+            self._bury_dead(else_n, node)
+            self._after_if(self._follow(node, ctx), barriers, ctx, depth, consumed)
+            return
         follow = self._follow(node, ctx)
         merges = self._merges(node)
         branch_barriers = set(barriers)
@@ -236,6 +254,19 @@ class _Structurer(object):
             then_n, else_n = else_n, None
             then_d, else_d = else_d, ("empty", None)
         if _empty(then_d) and _empty(else_d):
+            # Both arms were scheduled elsewhere. The condition still chooses which
+            # one runs when a flag join copied this branch per incoming compare.
+            if (self.by[node].get("flag_join") and cond and then_n is not None and else_n is not None
+                    and then_n != else_n):
+                self.emit_line("if (%s) {" % cond)
+                self.indent += 1
+                self.emit_line("goto loc_%x;" % then_n)
+                self.indent -= 1
+                self.emit_line("} else {")
+                self.indent += 1
+                self.emit_line("goto loc_%x;" % else_n)
+                self.indent -= 1
+                self.emit_line("}")
             self._after_if(follow, barriers, ctx, depth, consumed, merges)
             return
         if _empty(else_d) and then_d[0] == "line":
@@ -255,6 +286,15 @@ class _Structurer(object):
             self.indent -= 1
             self.emit_line("}")
         self._after_if(follow, barriers, ctx, depth, consumed, merges)
+
+    def _bury_dead(self, node, pred):
+        """A constant branch's dead arm is not emitted again by the final sweep."""
+        if node is None or self.preds.get(node) != [pred]:
+            return
+        self.emitted.add(node)
+        for succ in self.succs.get(node, []):
+            if self.preds.get(succ) == [node]:
+                self._bury_dead(succ, node)
 
     def _after_if(self, follow, barriers, ctx, depth, consumed, merges=()):
         for merge in merges:
@@ -434,10 +474,112 @@ class _Structurer(object):
         # a constant return that can be duplicated.
         if target not in self.emitted:
             return ("inline", None)
-        dup = self._small_tail(target)
+        dup = self._small_tail(target) or self._structured_tail(target, ctx)
         if dup:
             return ("dup", dup)
+        copied = self._copy_region(target, barriers, ctx, set(), 8, 8)
+        if copied:
+            return ("dup", copied)
         return ("line", "goto loc_%x;" % target)
+
+    def _copy_region(self, target, barriers, ctx, seen, blocks_left, stmts_left):
+        """Duplicate a tiny region whose every path ends at a barrier, continue, or return.
+
+        The block was already emitted on another path. Copying it here removes the
+        goto. Each path runs the copy once, so a call in the region stays one call.
+        """
+        if blocks_left < 0 or stmts_left < 0 or target in seen or target not in self.by:
+            return None
+        if target in barriers:
+            return []
+        loop = _loop_of(ctx)
+        if loop and target == loop["header"]:
+            return ["continue;"]
+        if loop and target == loop.get("exit") and _break_reaches_loop(ctx):
+            return ["break;"]
+        if target in self.loops:
+            return None
+        block = self.by[target]
+        if block.get("switch") or block.get("kind") == "ijmp":
+            return None
+        seen = set(seen)
+        seen.add(target)
+        if block.get("kind") == "ret":
+            stmts = [stmt for stmt in block.get("stmts") or [] if stmt.startswith("return ")]
+            line = stmts[0] if stmts else "return;"
+            return [line]
+        stmts = [stmt for stmt in block.get("stmts") or [] if not stmt.startswith("return ")]
+        if len(stmts) > stmts_left:
+            return None
+        succs = [item for item in self.succs.get(target, []) if item in self.by or item in barriers]
+        if block.get("kind") == "if" and len(succs) >= 2:
+            then_lines = self._copy_region(succs[0], barriers, ctx, seen, blocks_left - 1, stmts_left - len(stmts))
+            else_lines = self._copy_region(succs[1], barriers, ctx, seen, blocks_left - 1, stmts_left - len(stmts))
+            if then_lines is None or else_lines is None:
+                return None
+            cond = block.get("cond")
+            # A missing condition is not the constant true. Copying it as `if (1)`
+            # would hide the branch. The caller keeps the goto.
+            if not cond:
+                return None
+            lines = list(stmts)
+            if cond in {"1", "0 == 0", "1 != 0", "1 == 1"}:
+                return lines + then_lines
+            if cond in {"0", "0 != 0", "1 == 0"}:
+                return lines + else_lines
+            lines.append("if (%s) {" % cond)
+            lines.extend("  " + line for line in then_lines)
+            if else_lines:
+                lines.append("} else {")
+                lines.extend("  " + line for line in else_lines)
+            lines.append("}")
+            return lines
+        if len(succs) == 1:
+            rest = self._copy_region(succs[0], barriers, ctx, seen, blocks_left - 1, stmts_left - len(stmts))
+            if rest is None:
+                return None
+            return stmts + rest
+        return stmts or None
+
+    def _structured_tail(self, target, ctx):
+        """Copy a short straight line that reaches the loop header, its exit, or a return.
+
+        The copy replaces one goto with continue, break, or return. A call is not
+        copied: that would run it twice.
+        """
+        loop = _loop_of(ctx)
+        lines = []
+        node = target
+        seen = set()
+        for _ in range(6):
+            if node in seen or node not in self.by:
+                return None
+            seen.add(node)
+            if lines and loop and node == loop["header"]:
+                lines.append("continue;")
+                return lines
+            if lines and loop and node == loop.get("exit"):
+                lines.append("break;")
+                return lines
+            block = self.by[node]
+            if block.get("kind") == "ret" or (not self.succs.get(node) and any(
+                    stmt.startswith("return ") for stmt in block.get("stmts") or [])):
+                stmts = [stmt for stmt in block.get("stmts") or [] if stmt.startswith("return ")]
+                lines.append(stmts[0] if stmts else "return;")
+                return lines
+            if block.get("kind") == "if" or block.get("switch") or node in self.loops:
+                return None
+            stmts = list(block.get("stmts") or [])
+            if any(stmt.startswith("goto ") for stmt in stmts):
+                return None
+            lines.extend(stmts)
+            if len(lines) > 6:
+                return None
+            succs = self.succs.get(node, [])
+            if len(succs) != 1:
+                return None
+            node = succs[0]
+        return None
 
     def _small_tail(self, target):
         """Duplicate a tiny tail that ends in a constant return.
@@ -907,6 +1049,13 @@ def _has_unnamed(lines):
     return any(_UNNAMED_TAIL.search(line) for line in lines)
 
 
+_CALL_IN_STMT = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\s*\(")
+
+
+def _calls_in(lines):
+    return any(_CALL_IN_STMT.search(line) for line in lines)
+
+
 def _track_brace(stack, text):
     raw = re.sub(r'"[^"]*"', '""', text.strip())
     if raw.startswith("} else"):
@@ -1057,6 +1206,53 @@ def _reachable(entry, succs):
     return seen
 
 
+def _collapse_empty(by, succs, entry):
+    """Redirect edges through blocks that only fall into their successor.
+
+    A compiler join is often an empty block in front of the real post-dominator.
+    Leaving that block in the graph makes later entries `goto` the empty label
+    instead of falling into the block the branch already post-dominates.
+    """
+    preds = _preds(succs)
+
+    def final_dest(node, seen):
+        block = by.get(node)
+        targets = succs.get(node, [])
+        # One-predecessor relays are branch arms. Folding those into the
+        # successor gives the branch two identical edges and deletes the
+        # condition. Shared joins are the blocks later entries goto.
+        shared = len(preds.get(node, [])) >= 2
+        if (not shared or not block or block.get("stmts") or block.get("switch")
+                or block.get("kind") not in {"fall", "goto"} or len(targets) != 1):
+            return node
+        nxt = targets[0]
+        if nxt == node or nxt in seen or nxt not in by:
+            return node
+        seen.add(nxt)
+        return final_dest(nxt, seen)
+
+    mapping = {node: final_dest(node, set()) for node in by}
+    remove = {node for node, dest in mapping.items() if dest != node and not by[node].get("stmts")}
+    if not remove:
+        return by, succs, entry
+    new_by = {node: block for node, block in by.items() if node not in remove}
+    new_succs = {}
+    for node, targets in succs.items():
+        if node in remove:
+            continue
+        redirected = []
+        for target in targets:
+            target = mapping.get(target, target)
+            if target in remove:
+                target = mapping.get(target, target)
+            if target not in redirected:
+                redirected.append(target)
+        new_succs[node] = redirected
+    if entry in remove:
+        entry = mapping.get(entry, entry)
+    return new_by, new_succs, entry
+
+
 def _preds(succs):
     preds = {addr: [] for addr in succs}
     for addr, targets in succs.items():
@@ -1121,6 +1317,8 @@ def _loops(succs, dom):
         forward = _reachable(header, succs)
         backward = _reachable(header, preds)
         cycle = (forward & backward) | {header}
+        # Bodies larger than a small cycle are one irreducible component. Pulling
+        # them into every header stops if/else from using the real loop exits.
         if len(cycle) <= len(info["body"]) or len(cycle) > 400:
             continue
         info["body"] = cycle
