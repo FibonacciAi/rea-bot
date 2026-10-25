@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.0
+The owned decompiler structures regions instead of emitting a goto for every join. Ghidra remains an optional backend. Global parity stays unknown.
+- `rea_bot/native/struct.py` walks the dominator tree. Post-dominators place the follow of an `if`. Natural loops become `while`, `do-while`, or `for`, with `break` and `continue`. Condition chains become `&&` and `||`. Jump tables stay `switch`. A multi-entry join that is not the follow, and an irreducible cross edge, stay `goto`.
+- On the remeasured `/bin/ls`, native gotos fell from 1,944 to 1,004 across 189 functions (5.31 per function; stock Ghidra is 1.77) and from 168 to 70 in the `getopt_long` caller (stock is 43). The signature, the call, and the `switch` remain. Unnamed tokens are 1,074 against stock 5,694. Address literals stay at 1. Time is about 1.5 seconds.
+- On ripgrep 14.1.1 ELF arm64, discovery finds 6,963 functions and does not hit the cap. 6,959 decompiled functions have 1.70 gotos each, against stock Ghidra's 2.5 on its larger set, in about 46 seconds. Unnamed tokens and address literals stay lower. The sets are not the same: Ghidra still lists about 400 internal functions this discovery does not.
+- The discovery cap defaults to 16,000 functions and 1,200,000 instructions, overridable with `REA_BOT_MAX_FUNCTIONS` and `REA_BOT_MAX_INSNS`. Structured lines fold `x + 0`, `x * 1`, small integer arithmetic, and a doubled cast. `js` / `jns` become a sign comparison. Dead stores are not removed. Mean token similarity was not remeasured.
+- Readability tables are in `docs/DECOMPILER.md`. The Ghidra columns there are the 0.9.0 headless run. The Ghidra driver did not change.
+
 ## 0.9.0
 The owned decompiler now covers calls and real-size functions. Ghidra remains an optional backend. Global parity stays unknown.
 - x86-64 and arm64 functions are decompiled without the 80-instruction and no-call limits. The decompiler recovers SysV, Win64 and AAPCS64 arguments, names callees from ELF, PE and Mach-O imports, and structures `if` / `else`, `while`, `break` / `continue` and jump-table `switch`. A leaf of at most 80 instructions with no calls still uses the milestone 1 structurer.

@@ -8,6 +8,7 @@ On x86-64 and arm64 the owned decompiler structures calls, if/while/switch and n
 Leaf functions of at most 80 instructions still use the milestone 1 structurer.
 Nothing is executed.
 """
+import os
 import struct
 import time
 
@@ -18,8 +19,21 @@ from .runtime import activate
 
 _CFG_ARCH = {"x86-64", "arm64", "x86", "arm"}
 
-MAX_FUNCTIONS = 4000
-MAX_INSNS = 350_000
+def _env_int(name, default):
+    """Positive integer from the environment, or the default when unset or invalid."""
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return default
+
+
+DEFAULT_MAX_FUNCTIONS = 16000
+DEFAULT_MAX_INSNS = 1_200_000
+MAX_FUNCTIONS = _env_int("REA_BOT_MAX_FUNCTIONS", DEFAULT_MAX_FUNCTIONS)
+MAX_INSNS = _env_int("REA_BOT_MAX_INSNS", DEFAULT_MAX_INSNS)
 MAX_INSNS_FN = 6000
 MAX_STRINGS = 5000
 MAX_NEW_FUNCS = 400

@@ -184,6 +184,22 @@ class CallsAndSwitch(unittest.TestCase):
             self.assertIn("return (-1);", text)
             self.assertNotIn("goto", text)
 
+    def test_sign_flag_is_a_comparison(self):
+        source = "int sign(int n){if (n < 0) return 1; return 0;}\nint main(){return sign(-1);}\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "sign.c"
+            src.write_text(source)
+            binary = Path(tmp) / "sign"
+            compiled = subprocess.run(["gcc", "-O0", "-fno-inline", "-no-pie", "-o", str(binary), str(src)],
+                                      capture_output=True, text=True)
+            if compiled.returncode != 0:
+                self.skipTest(compiled.stderr[-200:])
+            from rea_bot.native.binary import analyze_binary
+            report = analyze_binary(binary)
+            text = "\n".join(next(func["pseudocode"] for func in report["functions_detail"] if func["name"] == "sign"))
+            self.assertIn(">= 0", text)
+            self.assertNotIn("if (1)", text)
+
 
 @unittest.skipUnless(shutil.which("clang"), "clang is not installed")
 class Arm64Call(unittest.TestCase):

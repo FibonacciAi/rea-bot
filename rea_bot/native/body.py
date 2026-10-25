@@ -9,6 +9,9 @@ import struct
 
 from .decompile import _copy_state, _get, _rename, _seed, _set, _slot
 from .prototypes import CLOBBER, REGS, lookup, normalize
+from .struct import structure_function
+
+struct_errors = []
 
 _EXIT = None
 _CALLS = {"call", "bl", "blr", "blx"}
@@ -47,10 +50,18 @@ def decompile_body(md, insns, arch, parameters=None, names=None, strings=None, c
     dom = _dominators(entry, list(by), succs, preds)
     loops = _loops(by, succs, dom)
     ipdom = _ipdom(by, succs)
+    lines = None
     try:
-        lines = _emit(entry, by, succs, ipdom, loops, stop=set())
-    except Exception:
-        lines = _calls_only(blocks)
+        lines = structure_function(entry, by, succs, dom, ipdom, loops)
+    except Exception as exc:
+        if len(struct_errors) < 8:
+            struct_errors.append((entry, "%s: %s" % (type(exc).__name__, exc)))
+        lines = None
+    if not lines:
+        try:
+            lines = _emit(entry, by, succs, ipdom, loops, stop=set())
+        except Exception:
+            lines = _calls_only(blocks)
     if not lines:
         lines = _calls_only(blocks)
     if not lines:
@@ -516,6 +527,12 @@ def _cond(state, item):
     if mnem == "cbnz" and item["ops"] and item["ops"][0]["k"] == "reg":
         return "%s != 0" % _get(state, item["ops"][0]["r"])
     flags = state.get("flags")
+    if mnem in {"js", "jns"} and flags:
+        # SF after test/cmp. `js` is not `jl`: signed less is SF xor OF.
+        op = "<" if mnem == "js" else ">="
+        if str(flags[1]) in {"0", "0x0"}:
+            return "%s %s 0" % (_num(flags[0]), op)
+        return "(%s - %s) %s 0" % (_num(flags[0]), _num(flags[1]), op)
     if mnem in _COND and flags:
         return "%s %s %s" % (_num(flags[0]), _COND[mnem], _charish(flags[1]))
     return None

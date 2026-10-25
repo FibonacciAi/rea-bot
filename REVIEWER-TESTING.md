@@ -4,7 +4,7 @@ Free and open source (MIT). No accounts, keys or payments. Needs Python 3.10+ an
 
 ## A. In the app (after adding the plugin)
 
-1. Ask: **"Lostwax status"**. Expect version `0.9.0`, the two skill paths, `engine.ready` true or false, `native.ready` true or false, `ghidra.ready` true or false, and `entitlements.plan: free` (certificates are free and unlimited).
+1. Ask: **"Lostwax status"**. Expect version `0.10.0`, the two skill paths, `engine.ready` true or false, `native.ready` true or false, `ghidra.ready` true or false, and `entitlements.plan: free` (certificates are free and unlimited).
 2. Ask: **"Use Lostwax on its bundled example: try the naive rebuild in reconstruction-naive first."** The bot should:
    - create a run for `examples/search-fixture/original` (route `javascript-application`);
    - either call the REA engine (if staged) or, if the engine truly cannot run here, record an engine waiver (shown in SPEC.md);
