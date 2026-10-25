@@ -40,6 +40,7 @@ def decompile_body(md, insns, arch, parameters=None, names=None, strings=None, c
     by = {block["start"]: block for block in blocks}
     _mark_tail_calls(blocks, names)
     _dataflow(blocks, by, arch, convention, names, strings, memory)
+    _external_tails(blocks, names)
     _trim_switches(blocks, by)
     _split_flag_joins(blocks, by)
     succs = {block["start"]: list(block["succs"]) for block in blocks}
@@ -75,7 +76,10 @@ def decompile_body(md, insns, arch, parameters=None, names=None, strings=None, c
     header = _header(blocks, parameters)
     if header:
         text = header + "\n" + text
-    return drop_dead_stores([line for line in text.split("\n") if line.strip()])
+    lines = drop_dead_stores([line for line in text.split("\n") if line.strip()])
+    text = _name_returns("\n".join(lines))
+    text = recover_fields(text, arch)
+    return [line for line in text.split("\n") if line.strip()]
 
 
 _THUNK_MNEM = {"endbr64", "endbr32", "nop", "jmp", "br", "adrp", "ldr", "add", "mov"}
@@ -100,6 +104,27 @@ def _mark_tail_calls(blocks, names):
         if entry in names and len(insns) <= 8 and all(
                 str(item.get("mnem", "")).split()[-1] in _THUNK_MNEM for item in insns):
             block["tail_call"] = names[entry]
+
+
+def _external_tails(blocks, names):
+    """A jump out of the function is a tail call, not a goto to a raw address."""
+    inside = {block["start"] for block in blocks}
+    names = names or {}
+    for block in blocks:
+        if block.get("kind") != "goto":
+            continue
+        target = block.get("target")
+        if target is None or target in inside:
+            continue
+        label = names.get(target) or ("sub_%x" % target)
+        call = label if "(" in str(label) else "%s()" % label
+        if not str(call).endswith(";"):
+            call = "%s;" % call
+        stmts = block.setdefault("stmts", [])
+        if call not in stmts:
+            stmts.append(call)
+        block["kind"] = "fall"
+        block["succs"] = []
 
 
 def _m(item):
@@ -588,10 +613,29 @@ def _rval(state, op, strings):
         if op.get("abs") is not None:
             return str(op["abs"])
         key = _slot(state, op)
-        if key is None:
-            return "mem"
-        return state.get("slots", {}).get(key, "mem")
+        if key is not None:
+            return state.get("slots", {}).get(key, "mem")
+        return _field_access(state, op)
     return "mem"
+
+
+def _field_access(state, op):
+    """A non-stack `[base + disp]` with no index. One offset is not yet a field."""
+    base_reg = op.get("base")
+    if not base_reg or op.get("index"):
+        return "mem"
+    if base_reg in {"rsp", "esp", "sp", "rbp", "ebp", "x29"}:
+        return "mem"
+    try:
+        disp = int(op.get("disp") or 0)
+    except (TypeError, ValueError):
+        return "mem"
+    if disp < 0 or disp > 4096:
+        return "mem"
+    base = str(_get(state, base_reg) or "")
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", base):
+        return "mem"
+    return "FIELD[%s+%d]" % (base, disp)
 
 
 def _narrow(value, reg):
@@ -1109,7 +1153,7 @@ def _emit(entry, by, succs, ipdom, loops, stop, loop_header=None, loop_exit=None
             lines.append("goto loc_%x;" % target)
             break
         if kind == "ijmp":
-            lines.append("goto indirect;")
+            lines.append("indirect();")
             break
         if not targets:
             break
@@ -1191,6 +1235,176 @@ def _label(lines):
     # Labels are attached by a second walk only when a goto remains. The address is the block start,
     # which the emitter does not currently prefix. Keep the goto; a label-less goto is still counted.
     return "\n".join(lines)
+
+
+# A result name is used only when the callee's catalog return is a pointer we can
+# actually see stored. The stem is the role of that pointer, not a guess at a type
+# we did not observe.
+_RETURN_NAMES = {
+    "readdir": "entry",
+    "readdir64": "entry",
+    "opendir": "dir",
+    "fdopendir": "dir",
+    "fopen": "stream",
+    "fdopen": "stream",
+    "getenv": "env",
+    "strdup": "copy",
+    "strstr": "match",
+    "strchr": "match",
+    "strrchr": "match",
+}
+
+# glibc dirent64. The same offsets are used on x86-64 and aarch64.
+_DIRENT = {0: "d_ino", 8: "d_off", 16: "d_reclen", 18: "d_type", 19: "d_name"}
+# glibc struct stat on x86-64 only. aarch64 uses a different layout, so it is not applied there.
+_STAT_X64 = {
+    0: "st_dev", 8: "st_ino", 16: "st_nlink", 24: "st_mode",
+    28: "st_uid", 32: "st_gid", 40: "st_rdev", 48: "st_size",
+    56: "st_blksize", 64: "st_blocks",
+}
+_FIELD = re.compile(r"FIELD\[([A-Za-z_][A-Za-z0-9_]*)\+(-?\d+)\]")
+_UNNAMED_BASE = re.compile(
+    r"^(?:param_\d+|arg\d+|FUN_[0-9A-Fa-f]+|sub_[0-9A-Fa-f]+|local_[0-9A-Fa-f]+|"
+    r"mem_[0-9A-Fa-f]+|data_[0-9A-Fa-f]+|undefined\d*|DAT_[0-9A-Fa-f]+)$")
+_CALL_HEAD = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+_SKIP_CALL = {"if", "while", "switch", "return", "for"}
+
+
+def _name_returns(text):
+    """Rename call_N when the callee's result is a known pointer."""
+    if not text or "call_" not in text:
+        return text
+    found = re.findall(r"\b(call_\d+)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(", text)
+    if not found:
+        return text
+    used = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", text))
+    counts = {}
+    mapping = {}
+    for call_var, callee in found:
+        stem = _RETURN_NAMES.get(normalize(callee))
+        if not stem or call_var in mapping:
+            continue
+        number = counts.get(stem, 0) + 1
+        counts[stem] = number
+        if number == 1 and stem not in used:
+            name = stem
+        else:
+            name = "%s_%d" % (stem, number)
+            while name in used:
+                number += 1
+                counts[stem] = number
+                name = "%s_%d" % (stem, number)
+        used.add(name)
+        mapping[call_var] = name
+    for call_var, name in sorted(mapping.items(), key=lambda item: -len(item[0])):
+        text = re.sub(r"\b%s\b" % re.escape(call_var), name, text)
+    return text
+
+
+def _split_args(blob):
+    args = []
+    depth = 0
+    start = 0
+    for index, char in enumerate(blob):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif char == "," and depth == 0:
+            args.append(blob[start:index].strip())
+            start = index + 1
+    tail = blob[start:].strip()
+    if tail:
+        args.append(tail)
+    return args
+
+
+def _iter_calls(text):
+    for match in _CALL_HEAD.finditer(text or ""):
+        name = match.group(1)
+        if name in _SKIP_CALL:
+            continue
+        depth = 1
+        index = match.end()
+        while index < len(text) and depth:
+            if text[index] == "(":
+                depth += 1
+            elif text[index] == ")":
+                depth -= 1
+            index += 1
+        if depth:
+            continue
+        yield name, _split_args(text[match.end():index - 1])
+
+
+def _ident_arg(text):
+    token = str(text or "").strip()
+    if token.startswith("(") and token.endswith(")"):
+        token = token[1:-1].strip()
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token):
+        return token
+    return ""
+
+
+def recover_fields(text, arch="x86-64"):
+    """Name structure fields when one base is read at two or more offsets.
+
+    A single offset stays `mem`: one displacement is not a structure. Offsets
+    less than 4 bytes apart, with no known struct, stay `mem` too: that is a
+    byte walk, not a field. A base that is still an unnamed token (`argN`,
+    `sub_…`) stays `mem`, so the recovery does not add unnamed tokens.
+    `readdir`'s result uses glibc dirent names when two of those offsets
+    appear. On x86-64, a buffer passed to `stat`, `fstat`, `lstat`, or
+    `fstatat` uses the glibc `struct stat` names on the same rule.
+    """
+    if not text or "FIELD[" not in text:
+        return text or ""
+    offsets = {}
+    for match in _FIELD.finditer(text):
+        offsets.setdefault(match.group(1), set()).add(int(match.group(2)))
+    dirent_bases = set()
+    for match in re.finditer(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*readdir(?:64)?\s*\(", text):
+        dirent_bases.add(match.group(1))
+    stat_bases = set()
+    if arch == "x86-64":
+        for name, args in _iter_calls(text):
+            key = normalize(name)
+            slot = {"stat": 1, "lstat": 1, "fstat": 1, "fstatat": 2}.get(key)
+            if slot is None or slot >= len(args):
+                continue
+            token = _ident_arg(args[slot])
+            if token:
+                stat_bases.add(token)
+    layouts = {}
+    for base, offs in offsets.items():
+        if _UNNAMED_BASE.match(base):
+            continue
+        chosen = None
+        if base in dirent_bases and len(offs & set(_DIRENT)) >= 2:
+            chosen = _DIRENT
+        if base in stat_bases and len(offs & set(_STAT_X64)) >= 2:
+            stat_hits = len(offs & set(_STAT_X64))
+            dirent_hits = len(offs & set(_DIRENT)) if chosen is _DIRENT else 0
+            if stat_hits >= dirent_hits:
+                chosen = _STAT_X64
+        # Offsets a few bytes apart, with no known struct, are a byte walk
+        # (the next character), not a field. A real field step is at least 4.
+        if chosen is None and (len(offs) < 2 or max(offs) - min(offs) < 4):
+            continue
+        layouts[base] = chosen
+    def repl(match):
+        base, disp = match.group(1), int(match.group(2))
+        offs = offsets.get(base) or set()
+        layout = layouts.get(base)
+        if layout is not None and disp in layout and len(offs & set(layout)) >= 2:
+            return "%s->%s" % (base, layout[disp])
+        if base in layouts and len(offs) >= 2:
+            return "%s->field_%x" % (base, disp)
+        return "mem"
+    rewritten = _FIELD.sub(repl, text)
+    if "FIELD[" in rewritten:
+        rewritten = re.sub(r"FIELD\[[^\]\n]*\]?", "mem", rewritten)
+    return rewritten
 
 
 def _usage_names(text, blocks):
