@@ -50,8 +50,48 @@ python3 bin/rea-bot native setup --apply --approve-source lostwax-native@1   # o
 
 `tests/test_native_live.py` uses real files when they are on disk: a CRC-32 wasm recovered from its JavaScript wrapper (4/4 cases, `declared-features-match`, global parity unknown), a Preact source map (12 modules), a `.deb` that unpacks to an ELF, Newtonsoft.Json metadata table counts and a C# stack lift (and a sibling portable PDB when that file is present), ripgrep builds for arm64 ELF, Windows PE (named imports and a CodeView basename) and Apple arm64 Mach-O, and a Debian hello arm64 ELF with named PLT imports. The comparison with REA on the same files is `docs/BENCHMARK.md`. Analyze never executes the target. The CRC harness runs only inside `diff` after the wasm digest is approved.
 
+## E. Async exports and freshness (owned fixtures, no network)
+
+```sh
+bash scripts/e2e_async.sh
+python3 -m unittest tests.test_reliability
+```
+
+The async demo generates an ESM harness and a Python harness, then compares five cases (including kwargs, fractions and a Unicode label). Expect a naive async Python rebuild at **0/5**, a fixed coroutine rebuild at **5/5**, **1/1 runner-attested feature**, an intact rerun and a free certificate. It prints the retained run directory and log digest. This demonstrates those inputs and exports only.
+
+Reliability tests also cover CommonJS, named params, thenables, a synchronous Python function returning an awaitable, rejection, and a synchronous function managing its own event loop. A separate fixture returning two different async JavaScript values must report **0/2**, rather than falsely comparing two `{}` promises.
+
+Incremental acceptance: use the same `--reconstruction-pin <complete rebuild directory>` for `--only` and `--resume`. An intact tree reuses completed cases from verified logs. Editing a helper module, command file, expected value or feature assignment executes the affected scope again; an implementation change resets cumulative passes. Without a reconstruction pin, resume executes every case. `--failed-only` accepts a fix but carries no passes from old bytes, and retests all failures even beyond the 200-row display preview.
+
+Evidence acceptance: changing summary results or the retained cases file must prevent parity accounting/recheck execution. Old parity counts cannot label a newer partial log as full parity; a partial log cannot be certified. Per-case regressions must be reported even if a full rerun has the same total number of matches. Records from earlier versions require a full rerun to establish the new context binding. These records remain unsigned local evidence, not protection against coordinated rewriting of the entire store.
+
+Capture acceptance: JSON stdout larger than 1 MiB fails even if its retained prefix is valid JSON. Continuous stdout or stderr is stopped at the byte cap; exact-cap output remains supported. CLI nonzero exit codes remain comparable. The process-group cleanup is POSIX; these limits do not sandbox code or limit its own memory/CPU.
+
+Independent review acceptance: sibling shadow logs cannot inject completed ledger cases; reuse reads only the attested `cases.jsonl`. Cached Python bytecode, empty directories, permission modes, modification times and the allowed environment settings invalidate stale context. A standalone original file keeps its standard content SHA-256, with its mode/mtime recorded separately. Different invalid UTF-8 stdout bytes must mismatch in CLI text mode, while JSON/HTML refuse such output. Unchanged optional `expected` metadata must remain usable with differential `--failed-only`. Records from the previous tree-pin recipe require fresh evidence and approvals.
+
+`python3 -m unittest tests.test_integration` checks native source-map evidence through `prepare`, async runtime comparison and a finite certificate, plus the native MCP control plane. It also generates a real wasm harness without executing it, refuses wrong approval before any execution, and keeps source-derived expected-only checks labeled `implementation-only`. A separate owned `add` wasm fixture executes the native-generated cases using Node's available WebAssembly runtime; that test does not validate the generated wasmtime harness. Wasmtime and binary analysis tests still require their optional pinned dependencies; a skip is not a native capability pass.
+
 ## What should never happen
 
 - The original runs without a matching `--approve-original` digest. Try a wrong digest: you get "Original pin changed or approval does not match".
 - A typed-in result overrides runner evidence (covered by `tests/test_flow.py`).
 - Any payment or payment prompt. `certify` is free and unlimited; nothing is ever charged.
+
+
+## F. Typed static output, sketches and backend repairs
+
+`python3 -m unittest tests.test_leaf_reliability tests.test_typed_cfg tests.test_nonemitter_integration tests.test_ghidra_reliability tests.test_decompiler -v` exercises owned instruction fixtures, local x86-64 assembly/C differentials when gcc is available, explicit refusal, integration labels and miniature trusted ZIP/launcher fixtures. It installs nothing. Historical readability checks in `test_decompiler` explicitly use `decompile_sketch`; they do not validate typed semantics. The semantic tests exercise the public typed-only `decompile_function` separately.
+
+Per-function `owned-typed` output must be `modeled-static`. Calls, indirect switches, unmodeled effects or ABIs may retain the broader 0.11.0 `structural-sketch`, marked `unsupported` with a reason. Neither label is an equivalence claim. Expanded discovery, named callees, import prototypes, structural calls/regions/switches, and discovery overrides remain available. The legacy sketch's dead-store helper retains calls and unknown memory/effect expressions; only unused scalar copies/literals may be discarded.
+
+Core Flow, structural and similarity tests discover without Capstone/LIEF; only tests requiring the absent decoder skip. Real Ghidra oracle tests require `REA_BOT_TEST_GHIDRA=1`, complete tree identity against the retained SHA-pinned ZIP, Java 21 and optional decoders. Review and authorize that external backend before opting in. No real decoder, ARM64 runtime or Ghidra pass is implied by owned instruction fixtures.
+
+Default CLI/API/MCP analysis stays native even when Ghidra is installed. Explicit `ghidra` or `auto` is required to launch it. A changed launcher, jar, extra tree entry or missing trusted archive must fail readiness. Java probe and launch share the selected runtime; environment, temporary HOME/JVM user.home, streaming caps and process-group cleanup remain enforced. Tests use owned fixtures for these checks.
+
+Ghidra `limit=0` retains the all-internal selector, not a completion guarantee. `attempted_count`, `completed_count`, `decompiled_count` (complete nontruncated bodies), `failed_count` and `truncated_count` are distinct. `all_functions_complete` needs a successful unique body for every listed internal function in an all-internal request. The process budget is at most 14,400 seconds and the retained JSON report at most 128 MiB; per-function C truncated at 200,000 characters is flagged. A cap or failure must not become a completed body.
+
+The earlier benchmark/readability tables are retained as historical author reports of the older structural implementation. They are not independent validation of this typed integration. Numeric-literal-aware textual similarity and fixed-width emitted casts change resemblance; compare owned runtime results separately. See `docs/DECOMPILER.md` for the precise current subset and remaining limits.
+
+## G. JavaScript benchmark fairness
+
+`python3 -m unittest tests.test_javascript_benchmark -v` checks that both tool plans receive identical bytes, bundle-only inputs cannot see the map, map extraction is a separate task, input changes are refused, and native-only observations cannot become an equipped ranking. `python3 scripts/benchmark_javascript.py --out /tmp/lw-js-fair-cases` prepares owned inputs and command templates without running any tool or target. The historical Preact 12-versus-1 counts measured different operations; paired Preact/Wakaru results remain unmeasured. See `docs/JAVASCRIPT-BENCHMARK.md`.

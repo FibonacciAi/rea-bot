@@ -77,12 +77,14 @@ def prepare(run_id, build, engine_waiver=None):
 
 
 def diff(run_id, cases, reconstruction, original=None, original_pin=None, approve_original=None, timeout=10, spec_sha=None,
-         only=None, failed_only=False, resume=False, protocol='json', compare=None):
+         only=None, failed_only=False, resume=False, protocol='json', compare=None, reconstruction_pin=None):
     s = runner.differential(run_id, cases, reconstruction, original, original_pin, approve_original, timeout, spec_sha,
-                            only, failed_only, resume, protocol, compare)
+                            only, failed_only, resume, protocol, compare, reconstruction_pin)
     card = report_run(run_id)
     kept = ['run', 'mode', 'protocol', 'compare', 'cases', 'matches', 'mismatches', 'mismatch_evidence', 'log', 'log_sha256',
-            'results', 'boundary', 'cumulative', 'executed_case_ids', 'only_features', 'failed_only', 'resume']
+            'results', 'boundary', 'cumulative', 'executed_case_ids', 'only_features', 'failed_only', 'resume',
+            'reconstruction_pin_sha256', 'reconstruction_command_files', 'execution_intact', 'reuse_note', 'resume_reused_cases']
+    kept += ['pin_schema', 'environment']
     return {k: s[k] for k in kept} | {'scorecard': card['scorecard'], 'label': card['parity_score']['label']}
 
 
@@ -108,6 +110,8 @@ def parity(run_id, results=None, spec_sha=None):
         else:
             diff_summary = None
     out = workbench.assess_parity(spec, list(merged.values()))
+    out['diff_log_sha256'] = diff_summary['log_sha256'] if diff_summary else None
+    out['diff_summary_sha256'] = runner.sha256_file(Path(latest) / 'summary.json') if diff_summary else None
     store.write_json(run.dir / 'parity.json', out)
     (run.dir / 'PARITY.md').write_text(report.parity_md(run, out, diff_summary))
     run.update_meta(status='parity-assessed')
@@ -126,12 +130,17 @@ def recheck(run_id, rerun=False):
     if not latest:
         return {**out, 'diff': None, 'note': 'No differential run yet.'}
     summary = store.read_json(Path(latest) / 'summary.json')
-    out['log_intact'] = runner.verify_diff(Path(latest) / 'summary.json')['intact']
+    check = runner.verify_diff(Path(latest) / 'summary.json')
+    out['log_intact'] = check['intact']
+    if not check['intact']:
+        out['integrity_reason'] = check.get('reason')
     pins = runner.command_files_intact(summary)
     out['original_command_intact'] = pins['intact']
     out['partial_selection'] = bool(summary.get('only_features') or summary.get('failed_only') or summary.get('resume'))
     out['previous'] = {'matches': summary['matches'], 'cases': summary['cases'], 'mode': summary['mode']}
     if rerun:
+        if not check['intact']:
+            raise ValueError('Differential evidence changed; refusing to rerun: ' + check.get('reason', 'integrity failure'))
         if not pins['intact']:
             raise ValueError('Original command file changed: ' + ', '.join(pins['changed']) + '. Review it and run diff again.')
         cases_copy = Path(latest) / 'cases-input.json'
@@ -140,9 +149,14 @@ def recheck(run_id, rerun=False):
         pin = summary.get('original_pin_path')
         new = runner.differential(run_id, cases_copy, summary['reconstruction_argv'], summary['original_argv'],
                                   pin if summary['original_argv'] else None, summary['original_pin_sha256'], summary['timeout_s'], spec['spec_sha256'],
-                                  protocol=summary.get('protocol') or 'json', compare=summary.get('compare'))
+                                  protocol=summary.get('protocol') or 'json', compare=summary.get('compare'),
+                                  reconstruction_pin=summary.get('reconstruction_pin_path'))
         out['current'] = {'matches': new['matches'], 'cases': new['cases'], 'mode': new['mode'], 'log': new['log']}
-        out['regressed'] = new['matches'] < summary['matches']
+        old_rows = {r['id']: r for r in runner._read_rows(summary['log'])}
+        new_rows = {r['id']: r for r in runner._read_rows(new['log'])}
+        out['regressed_case_ids'] = [i for i, row in old_rows.items()
+                                     if row['match'] and i in new_rows and not new_rows[i]['match']]
+        out['regressed'] = bool(out['regressed_case_ids'])
         parity(run_id)
     return out
 
@@ -158,6 +172,16 @@ def certify(run_id):
         raise ValueError('A certificate needs a differential run (original approved and executed) for the current specification.')
     if not runner.verify_diff(Path(latest) / 'summary.json')['intact']:
         raise ValueError('Differential log changed; cannot certify.')
+    if summary.get('only_features') or summary.get('failed_only') or summary.get('resume'):
+        raise ValueError('A certificate requires a full differential run, not a partial selection.')
+    summary_sha = runner.sha256_file(Path(latest) / 'summary.json')
+    if p.get('diff_log_sha256') != summary['log_sha256'] or p.get('diff_summary_sha256') != summary_sha:
+        raise ValueError('Assess parity for the latest differential run before certifying.')
+    # Recompute from the verified log; parity.json cannot inject passes.
+    spec = run.load_spec()
+    if spec['spec_sha256'] != summary['spec_sha256']:
+        raise ValueError('A certificate requires the current specification.')
+    p = workbench.assess_parity(spec, summary['results'])
     ok, info = entitlements.consume_certificate()
     if not ok:
         return info
@@ -165,6 +189,11 @@ def certify(run_id):
             'spec_sha256': p['spec_sha256'], 'counts': p['counts'], 'declared_features': p['declared_features'],
             'runner_attested_passes': p['runner_attested_passes'], 'cases': summary['cases'], 'matches': summary['matches'],
             'log_sha256': summary['log_sha256'], 'original_pin_sha256': summary['original_pin_sha256'],
+            'summary_sha256': summary_sha,
+            'pin_schema': summary['pin_schema'], 'environment': summary['environment'],
+            'cases_input_sha256': summary['cases_input_sha256'],
+            'reconstruction_pin_sha256': summary.get('reconstruction_pin_sha256'),
+            'reconstruction_command_files': summary.get('reconstruction_command_files'),
             'issued': store.now(), 'global_parity': 'unknown',
             'protocol': summary.get('protocol') or 'json', 'compare': summary.get('compare') or 'exact',
             'signature': None, 'signature_note': 'Unsigned local certificate. Verify it by re-running `rea-bot recheck <run> --rerun`.'}
@@ -237,9 +266,28 @@ def report_run(run_id):
     run = store.Run(run_id)
     latest = run.meta.get('latest_diff')
     diff_summary = store.read_json(Path(latest) / 'summary.json') if latest else None
-    intact = runner.verify_diff(Path(latest) / 'summary.json')['intact'] if diff_summary else None
+    check = runner.verify_diff(Path(latest) / 'summary.json') if diff_summary else None
+    intact = check['intact'] if check else None
+    if check and not intact:
+        diff_summary = {**diff_summary, 'integrity_reason': check.get('reason')}
     parity_doc = store.read_json(run.dir / 'parity.json')
+    if not diff_summary:
+        parity_doc = None
+    if parity_doc and diff_summary:
+        if (parity_doc.get('spec_sha256') != diff_summary['spec_sha256']
+                or parity_doc.get('diff_log_sha256') != diff_summary['log_sha256']
+                or parity_doc.get('diff_summary_sha256') != runner.sha256_file(Path(latest) / 'summary.json')):
+            parity_doc = None
+        elif intact:
+            # Never present edited parity counts as runner evidence.
+            derived = workbench.assess_parity(run.load_spec(diff_summary['spec_sha256']), diff_summary['results'])
+            parity_doc = {**derived, 'diff_log_sha256': diff_summary['log_sha256']}
     score = report.build_score(diff_summary, parity_doc, store.read_json(run.dir / 'ledger.json'), intact)
+    if diff_summary and run.meta.get('latest_spec') != diff_summary['spec_sha256']:
+        parity_doc = None
+        score = report.build_score(None, None, None, None)
+        score['note'] = 'The latest differential log belongs to an earlier specification. Run diff for the current specification.'
     text = report.scorecard_md(run, diff_summary, parity_doc, score, run.meta.get('acquired'), store.read_json(run.dir / 'scope.json'), intact)
     (run.dir / 'SCORECARD.md').write_text(text)
-    return {'run': run_id, 'parity_score': score, 'scorecard': str(run.dir / 'SCORECARD.md'), 'log_intact': intact}
+    return {'run': run_id, 'parity_score': score, 'scorecard': str(run.dir / 'SCORECARD.md'), 'log_intact': intact,
+            'integrity_reason': check.get('reason') if check else None}

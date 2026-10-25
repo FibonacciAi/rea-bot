@@ -1,4 +1,4 @@
-"""Milestone 1 SSA decompiler: x86-64 and arm64 if/while, plus similarity to Ghidra."""
+"""Historical structural readability checks; modeled semantics have separate typed tests."""
 import os
 import shutil
 import subprocess
@@ -9,12 +9,15 @@ from pathlib import Path
 from rea_bot.native.runtime import activate
 
 activate()
-from capstone import CS_ARCH_ARM64, CS_ARCH_X86, CS_MODE_64, CS_MODE_LITTLE_ENDIAN, Cs  # noqa: E402
-
-from rea_bot.native.decompile import decompile_function, similarity  # noqa: E402
-import lief  # noqa: E402
-
-lief.logging.disable()
+from rea_bot.native.decompile import decompile_sketch, similarity  # noqa: E402
+try:
+    from capstone import CS_ARCH_ARM64, CS_ARCH_X86, CS_MODE_64, CS_MODE_LITTLE_ENDIAN, Cs
+    import lief
+except ImportError:
+    HAS_DECODERS = False
+else:
+    HAS_DECODERS = True
+    lief.logging.disable()
 
 SOURCE = (
     "int add(int left, int right){return left + right;}\n"
@@ -53,7 +56,7 @@ class Similarity(unittest.TestCase):
         self.assertLess(score["score"], 1.0)
 
 
-@unittest.skipUnless(shutil.which("gcc"), "gcc is not installed")
+@unittest.skipUnless(HAS_DECODERS and shutil.which("gcc"), "optional Capstone/LIEF or gcc is not installed")
 class StructuredX64(unittest.TestCase):
     def test_add_if_and_while(self):
         self._check("x86-64", ["gcc", "-O0", "-c", "-fno-asynchronous-unwind-tables", "-fno-inline"])
@@ -76,7 +79,7 @@ class StructuredX64(unittest.TestCase):
                 end = symbols[index + 1][0] if index + 1 < len(symbols) else base + len(raw)
                 body = [insn for insn in insns if addr <= insn.address < end]
                 params = {"add": ["left", "right"], "pick": ["cond", "a", "b"], "dec": ["n"]}[name]
-                rendered[name] = "\n".join(decompile_function(md, body, arch, params) or [])
+                rendered[name] = "\n".join(decompile_sketch(md, body, arch, params) or [])
             self.assertTrue("return (right + left);" in rendered["add"] or "return (left + right);" in rendered["add"])
             self.assertNotIn("goto", rendered["add"])
             self.assertIn("if (cond == 0)", rendered["pick"])
@@ -91,13 +94,15 @@ class StructuredX64(unittest.TestCase):
             self.assertGreaterEqual(score["return_score"], 0.5)
 
 
-@unittest.skipUnless(shutil.which("clang"), "clang is not installed")
+@unittest.skipUnless(HAS_DECODERS and shutil.which("clang"), "optional Capstone/LIEF or clang is not installed")
 class StructuredArm64(StructuredX64):
     def test_add_if_and_while(self):
         self._check("arm64", ["clang", "-target", "aarch64-linux-gnu", "-c", "-O0", "-fno-pic",
                               "-ffreestanding", "-fno-asynchronous-unwind-tables"])
 
 
+@unittest.skipUnless(HAS_DECODERS and os.environ.get("REA_BOT_TEST_GHIDRA") == "1",
+                     "real Ghidra oracle requires decoder wheels and explicit REA_BOT_TEST_GHIDRA=1")
 class GhidraOracle(unittest.TestCase):
     def test_live_add_similarity(self):
         from rea_bot.native import ghidra_backend
@@ -131,7 +136,7 @@ class GhidraOracle(unittest.TestCase):
             self.assertIn("left", ghidra)
 
 
-@unittest.skipUnless(shutil.which("gcc"), "gcc is not installed")
+@unittest.skipUnless(HAS_DECODERS and shutil.which("gcc"), "optional Capstone/LIEF or gcc is not installed")
 class CallsAndSwitch(unittest.TestCase):
     def test_getopt_loop_names_argc_and_argv(self):
         source = (
@@ -201,7 +206,7 @@ class CallsAndSwitch(unittest.TestCase):
             self.assertNotIn("if (1)", text)
 
 
-@unittest.skipUnless(shutil.which("clang"), "clang is not installed")
+@unittest.skipUnless(HAS_DECODERS and shutil.which("clang"), "optional Capstone/LIEF or clang is not installed")
 class Arm64Call(unittest.TestCase):
     def test_memory_operands_and_call_result(self):
         source = "int add(int a, int b){return a + b;}\nint use(int a){return add(a, 1);}\n"
@@ -222,7 +227,7 @@ class Arm64Call(unittest.TestCase):
             md = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
             md.detail = True
             insns = [insn for insn in md.disasm(raw, base) if insn.address >= 32]
-            rendered = "\n".join(decompile_function(md, insns, "arm64") or [])
+            rendered = "\n".join(decompile_sketch(md, insns, "arm64") or [])
             self.assertIn("return call_1;", rendered)
             self.assertNotIn("goto 0x", rendered)
 
@@ -250,7 +255,7 @@ class Arm64Call(unittest.TestCase):
             md = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
             md.detail = True
             insns = list(md.disasm(bytes(text.content), int(text.virtual_address)))
-            rendered = "\n".join(decompile_function(md, insns, "arm64") or [])
+            rendered = "\n".join(decompile_sketch(md, insns, "arm64") or [])
             self.assertIn("(arg0 & arg1)", rendered)
             self.assertIn("(arg0 + arg1)", rendered)
             self.assertIn("(arg0 - arg1)", rendered)

@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+- Reject metadata control characters before Ghidra config serialization; defend the post-script against duplicate control directives and redirected output. Refuse unsupported mixed ABI classes or missing formal GP bindings during DWARF naming.
+- Repair fresh owned differential failures with typed joins, width truncation/zero-extension, signed-overflow flags, operand-width BT indices and explicit unsupported effects. Validate parameter names and substitute DWARF names simultaneously to avoid changing values through aliasing.
+- Withdraw the Preact/Wakaru ranking: source-map content extraction was compared with structural bundle unpacking. Prepare separate equal-input structural, heuristic and map-content cases; paired results remain unmeasured until an equipped run.
+- Carry forward the reviewed async, freshness, evidence and process-capture repairs below without removing the expanded 0.11.0 discovery/sketch capabilities or any of the 20 MCP tools.
+- The public decompiler emits only the bounded typed leaf/register-CFG subset or an explicit refusal. Per-function `owned-typed` output is `modeled-static`; preserved broader calls/loops/switches are `structural-sketch`, `unsupported`, with a fallback reason. Typed success never means equivalence. Historical readability tests exercise the explicit sketch API separately from owned machine/C differential tests.
+- Core tests discover without Capstone/LIEF. Similarity includes numeric literals and preserves identifier case; historical token scores below apply to the older algorithm.
+- Analysis defaults to native on every interface. Ghidra requires an explicit backend choice, complete tree identity against its locally retained pinned ZIP, the same selected Java for probe/launch, an isolated environment and bounded process-group capture. Real Ghidra tests require explicit opt-in.
+- Independent review repaired shadow-log ledger injection, bytecode/empty-directory/mode/environment freshness gaps, lossy CLI byte comparisons and differential failure selection with optional expected metadata. Tree pins now use `sha256-tree-v2`; earlier records require fresh approval/evidence.
+- Generated JavaScript harnesses await promises and thenables; Python harnesses support async functions and returned awaitables. Rejections fail instead of becoming false matches.
+- Incremental reuse binds command bytes, a declared `--reconstruction-pin` dependency tree and complete case definitions. Changed implementations reset cumulative passes. Without a dependency pin, resume re-executes all cases. Failure selection reads every failure, including those beyond the 200-row preview.
+- Differential summaries and case inputs are digest-bound to the run, with matches and feature results recomputed from logs. Edited summaries, stale parity accounting and partial certificates are refused. Older evidence needs a full rerun.
+- Streaming stdout/stderr limits stop excessive output before unbounded capture; timeout and overflow stop the process group. Recheck detects per-case regressions even when aggregate matches stay equal.
+- Ghidra retains its all-internal selector with bounded process/report capture. Attempts, successful bodies, failures and truncated C are reported separately; a requested full run is not a completed result. Legacy structural dead-store elimination now retains unknown memory/effects.
+- Version remains 0.11.0 and all 20 MCP tools remain available. The entries below retain upstream release history and author-reported measurements of the previous structural implementation, not validation of the typed integration.
+
 ## 0.11.0
 The owned decompiler follows more joins, prints real flag conditions, and drops dead stores. Ghidra remains an optional backend. Global parity stays unknown.
 - A multi-entry post-dominator is the follow of an `if` when that `if` does not dominate it. A small already-emitted return tail with no unnamed tokens is duplicated. An irreducible loop extends to the nodes that can return to its header, up to 400. A standalone `goto` whose target is the next emitted block is dropped.

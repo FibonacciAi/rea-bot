@@ -54,9 +54,14 @@ public class LostwaxDecompile extends GhidraScript {
 		if (getScriptArgs().length < 1) {
 			throw new IllegalArgumentException("LostwaxDecompile needs a config path.");
 		}
-		parse(Files.readAllLines(new File(getScriptArgs()[0]).toPath(), StandardCharsets.UTF_8));
+		File configFile = new File(getScriptArgs()[0]).getCanonicalFile();
+		parse(Files.readAllLines(configFile.toPath(), StandardCharsets.UTF_8));
 		if (outPath == null) {
 			throw new IllegalArgumentException("LostwaxDecompile config has no out path.");
+		}
+		File expectedOutput = new File(configFile.getParentFile(), "out.json").getCanonicalFile();
+		if (!expectedOutput.equals(new File(outPath).getCanonicalFile())) {
+			throw new IllegalArgumentException("Report output must be out.json beside the private config");
 		}
 		long imageBase = currentProgram.getImageBase().getOffset();
 		int namesApplied = applyNames(imageBase);
@@ -124,10 +129,11 @@ public class LostwaxDecompile extends GhidraScript {
 						code = "";
 					}
 				}
-				if (code.length() > 200000) {
+				boolean truncated = code.length() > 200000;
+				if (truncated) {
 					code = code.substring(0, 200000);
 				}
-				decompiled.add(functionJson(function, imageBase, code, completed));
+				decompiled.add(functionJson(function, imageBase, code, completed, truncated));
 			}
 		} finally {
 			decompiler.dispose();
@@ -151,7 +157,7 @@ public class LostwaxDecompile extends GhidraScript {
 			}
 			first = false;
 			internal++;
-			json.append(functionJson(function, imageBase, null, false));
+			json.append(functionJson(function, imageBase, null, false, false));
 		}
 		FunctionIterator externals = manager.getExternalFunctions();
 		while (externals.hasNext()) {
@@ -161,7 +167,7 @@ public class LostwaxDecompile extends GhidraScript {
 			}
 			first = false;
 			external++;
-			json.append(functionJson(function, imageBase, null, false));
+			json.append(functionJson(function, imageBase, null, false, false));
 		}
 		json.append("],\"internal\":").append(internal);
 		json.append(",\"external\":").append(external);
@@ -177,31 +183,47 @@ public class LostwaxDecompile extends GhidraScript {
 	}
 
 	private void parse(List<String> lines) {
+		Set<String> controls = new LinkedHashSet<String>();
 		for (String line : lines) {
 			if (line.isEmpty() || line.charAt(0) == '#') {
 				continue;
 			}
 			String[] parts = line.split("\t", -1);
 			String kind = parts[0];
-			if ("out".equals(kind) && parts.length >= 2) {
+			boolean control = "out".equals(kind) || "source_base".equals(kind) || "limit".equals(kind) || "decomp_timeout".equals(kind);
+			int expected = control || "hint".equals(kind) ? 2 : "name".equals(kind) || "ret".equals(kind) ? 3 : "param".equals(kind) ? 5 : -1;
+			if ((expected < 0 && !("extern".equals(kind) && parts.length >= 3)) || (expected >= 0 && parts.length != expected)) {
+				throw new IllegalArgumentException("Unknown directive or invalid field count");
+			}
+			if (control && !controls.add(kind)) {
+				throw new IllegalArgumentException("Duplicate control directive");
+			}
+			for (String field : parts) {
+				for (int i = 0; i < field.length(); i++) {
+					if (field.charAt(i) < 32 || field.charAt(i) == 127) {
+						throw new IllegalArgumentException("Control character in config field");
+					}
+				}
+			}
+			if ("out".equals(kind) && parts.length == 2) {
 				outPath = parts[1];
-			} else if ("source_base".equals(kind) && parts.length >= 2) {
+			} else if ("source_base".equals(kind) && parts.length == 2) {
 				sourceBase = Long.parseUnsignedLong(parts[1], 16);
-			} else if ("limit".equals(kind) && parts.length >= 2) {
+			} else if ("limit".equals(kind) && parts.length == 2) {
 				limit = Integer.parseInt(parts[1]);
-			} else if ("decomp_timeout".equals(kind) && parts.length >= 2) {
+			} else if ("decomp_timeout".equals(kind) && parts.length == 2) {
 				decompTimeout = Integer.parseInt(parts[1]);
-			} else if ("name".equals(kind) && parts.length >= 3) {
+			} else if ("name".equals(kind) && parts.length == 3) {
 				names.add(new long[] {Long.parseUnsignedLong(parts[1], 16)});
 				nameText.add(parts[2]);
-			} else if ("param".equals(kind) && parts.length >= 5) {
+			} else if ("param".equals(kind) && parts.length == 5) {
 				params.add(new long[] {Long.parseUnsignedLong(parts[1], 16), Long.parseLong(parts[2])});
 				paramTypes.add(parts[3]);
 				paramNames.add(parts[4]);
-			} else if ("ret".equals(kind) && parts.length >= 3) {
+			} else if ("ret".equals(kind) && parts.length == 3) {
 				returns.add(new long[] {Long.parseUnsignedLong(parts[1], 16)});
 				returnTypes.add(parts[2]);
-			} else if ("hint".equals(kind) && parts.length >= 2) {
+			} else if ("hint".equals(kind) && parts.length == 2) {
 				hints.add(Long.parseUnsignedLong(parts[1], 16));
 			} else if ("extern".equals(kind) && parts.length >= 3) {
 				String[] row = new String[parts.length - 1];
@@ -448,7 +470,7 @@ public class LostwaxDecompile extends GhidraScript {
 		}
 	}
 
-	private String functionJson(Function function, long imageBase, String code, boolean completed) {
+	private String functionJson(Function function, long imageBase, String code, boolean completed, boolean truncated) {
 		long offset = function.getEntryPoint().getOffset();
 		StringBuilder row = new StringBuilder();
 		row.append("{\"address\":\"").append(hex(offset)).append('"');
@@ -467,6 +489,7 @@ public class LostwaxDecompile extends GhidraScript {
 		row.append(",\"param_count\":").append(function.getParameterCount());
 		if (code != null) {
 			row.append(",\"decompile_completed\":").append(completed);
+			row.append(",\"c_truncated\":").append(truncated);
 			row.append(",\"c\":").append(quote(code));
 			row.append(",\"calls\":[");
 			boolean first = true;

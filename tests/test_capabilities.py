@@ -241,16 +241,16 @@ class ScopeHarnessAndDiff(TempHome):
         self.assertEqual(fixed['cases'], 1)
         self.assertEqual(fixed['matches'], 1)
         self.assertEqual(fixed['results'][0]['status'], 'blocked')
-        self.assertEqual(fixed['cumulative']['matches'], 3)
-        only = api.diff('inc', str(path), ['python3', str(recon)], ['python3', str(orig)], str(orig), pin, 10, None, ['a'])
+        # The previous implementation's passes do not carry into the fixed bytes.
+        self.assertEqual(fixed['cumulative']['matches'], 1)
+        only = api.diff('inc', str(path), ['python3', str(recon)], ['python3', str(orig)], str(orig), pin, 10, None, ['a'],
+                        reconstruction_pin=str(recon))
         self.assertEqual(only['cases'], 1)
         self.assertEqual([row['feature_id'] for row in only['results']], ['a'])
-        ledger = store.read_json(store.Run('inc').dir / 'ledger.json')
-        del ledger['cases']['b2']
-        store.write_json(store.Run('inc').dir / 'ledger.json', ledger)
-        resumed = api.diff('inc', str(path), ['python3', str(recon)], ['python3', str(orig)], str(orig), pin, 10, None, None, False, True)
-        self.assertEqual(resumed['executed_case_ids'], ['b2'])
-        self.assertEqual(resumed['cases'], 1)
+        resumed = api.diff('inc', str(path), ['python3', str(recon)], ['python3', str(orig)], str(orig), pin, 10, None, None, False, True,
+                           reconstruction_pin=str(recon))
+        self.assertEqual(resumed['executed_case_ids'], ['b1', 'b2'])
+        self.assertEqual(resumed['cases'], 2)
         self.assertEqual(resumed['cumulative']['cases'], 3)
         orig.write_text('import json,sys\njson.dump(1, sys.stdout)\n')
         with self.assertRaisesRegex(ValueError, 'changed'):

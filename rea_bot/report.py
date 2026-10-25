@@ -87,16 +87,17 @@ def _fraction(part, whole):
 
 def build_score(diff, parity, ledger, log_intact):
     """Fractions over what was actually run. global_parity stays unknown."""
-    if parity and diff and parity.get('spec_sha256') != diff.get('spec_sha256'):
+    if parity and diff and (parity.get('spec_sha256') != diff.get('spec_sha256')
+                            or parity.get('diff_log_sha256') != diff.get('log_sha256')):
         parity = None
     cumulative = None
-    if isinstance(ledger, dict) and isinstance(ledger.get('cases'), dict) and diff and ledger.get('key') == diff.get('ledger_key'):
-        cumulative = {'cases': len(ledger['cases']),
-                      'matches': sum(1 for item in ledger['cases'].values() if item.get('match'))}
-    elif diff and diff.get('cumulative'):
+    # Display the verified run's snapshot, never an editable ledger's claims.
+    if diff and diff.get('cumulative') and log_intact:
         cumulative = {'cases': diff['cumulative'].get('cases'), 'matches': diff['cumulative'].get('matches')}
-    case_matches = diff['matches'] if diff else None
-    case_total = diff['cases'] if diff else None
+    if log_intact is False:
+        parity = None
+    case_matches = diff['matches'] if diff and log_intact else None
+    case_total = diff['cases'] if diff and log_intact else None
     feature_passes = parity['runner_attested_passes'] if parity else None
     feature_declared = parity['declared_features'] if parity else None
     label = 'unmeasured'
@@ -108,7 +109,7 @@ def build_score(diff, parity, ledger, log_intact):
         complete = bool(parity and feature_passes == feature_declared and parity['counts']['passed'] == feature_declared
                         and parity['counts']['failed'] == 0 and parity['counts']['blocked'] == 0 and parity['counts']['not-run'] == 0
                         and diff and diff['matches'] == diff['cases'] and diff['mode'] == 'differential'
-                        and not diff.get('failed_only') and not diff.get('resume'))
+                        and not diff.get('only_features') and not diff.get('failed_only') and not diff.get('resume'))
         if complete:
             label = 'declared-features-match'
         elif diff and diff['cases'] and diff['matches'] == diff['cases']:
@@ -117,7 +118,7 @@ def build_score(diff, parity, ledger, log_intact):
             label = 'partial'
     return {'label': label, 'global_parity': 'unknown',
             'case_matches': case_matches, 'case_total': case_total,
-            'case_fraction': _fraction(case_matches, case_total) if diff else None,
+            'case_fraction': _fraction(case_matches, case_total) if case_total else None,
             'feature_passes': feature_passes, 'feature_declared': feature_declared,
             'feature_fraction': _fraction(feature_passes, feature_declared) if parity else None,
             'cumulative_cases': None if not cumulative else cumulative.get('cases'),
@@ -151,8 +152,14 @@ def scorecard_md(run, diff, parity, score, acquired, scope, log_intact):
         lines += ['## Scope', '', '- `' + scope.get('path', '') + '` (' + scope.get('language', '') + '): ' + names, '']
     if diff:
         lines += ['## Evidence', '', '- Protocol: ' + str(diff.get('protocol') or 'json') + ', compare: ' + str(diff.get('compare') or 'exact'),
+                  '- Executed spec sha256: `' + diff['spec_sha256'] + '`',
                   '- Log sha256: `' + diff['log_sha256'] + '`', '- Log intact: ' + str(bool(log_intact)),
-                  '- Original pin sha256: `' + str(diff.get('original_pin_sha256')) + '`', '']
+                  '- Original pin sha256: `' + str(diff.get('original_pin_sha256')) + '`',
+                  '- Reconstruction pin sha256: `' + str(diff.get('reconstruction_pin_sha256')) + '`', '']
+        if diff.get('integrity_reason'):
+            lines += ['Evidence could not be verified: ' + _esc(diff['integrity_reason']), '']
+        if run.meta.get('latest_spec') != diff['spec_sha256']:
+            lines += ['This log belongs to an earlier specification. Run a full diff for the current specification.', '']
         if diff.get('only_features') or diff.get('failed_only') or diff.get('resume'):
             lines += ['This log is a partial selection (`--only`, `--failed-only` or `--resume`). Feature passes above are only the cases in this log. Run a full diff before treating the declared set as matched.', '']
         if diff.get('mismatch_evidence'):

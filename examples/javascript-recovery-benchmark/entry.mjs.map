@@ -1,0 +1,1 @@
+{"version": 3, "sources": ["src/twice.js"], "sourcesContent": ["export async function twice(value) { return value * 2; }\n"], "mappings": "AAAA", "file": "entry.mjs"}

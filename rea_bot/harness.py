@@ -6,7 +6,8 @@ Call convention for each case input:
   {"param": ...} with --params a,b  ->  fn(input[a], input[b]) on both sides.
   anything else                     ->  fn(input).
 
-JavaScript `undefined` is written as JSON null. A thrown error is a nonzero exit.
+Async results are awaited on both sides. JavaScript `undefined` is written as JSON null.
+A thrown error or rejected awaitable is a nonzero exit.
 """
 import hashlib
 import json
@@ -51,16 +52,23 @@ if (input && typeof input === 'object' && !Array.isArray(input) && Object.protot
 } else {
   result = fn(input);
 }
+result = await result;
 process.stdout.write(typeof result === 'undefined' ? 'null' : JSON.stringify(result));
 '''
 
-_PY = '''import importlib.util
+_PY = '''import asyncio
+import importlib.util
+import inspect
 import json
 import sys
 
 ENTRY = %(entry)s
 SYMBOL = %(symbol)s
 PARAMS = %(params)s
+
+
+async def resolve_result(value):
+    return await value
 
 
 def main():
@@ -77,6 +85,8 @@ def main():
         result = fn(*(data.get(name) for name in PARAMS))
     else:
         result = fn(data)
+    if inspect.isawaitable(result):
+        result = asyncio.run(resolve_result(result))
     json.dump(result, sys.stdout, ensure_ascii=False, allow_nan=False)
 
 
@@ -193,5 +203,6 @@ def generate(run, entry, symbol, out, params=None, language=None):
     return {'run': run.id, 'out': str(destination), 'sha256': digest, 'language': lang, 'format': fmt,
             'entry': shown, 'symbol': symbol, 'params': names,
             'undefined_json': 'null' if lang == 'js' else None,
+            'async_results': 'awaited',
             'call': 'args/kwargs, or named params when --params is set',
             'note': 'The harness is not executed here. Run it through rea-bot diff. Review the file before approving an original pin.'}
