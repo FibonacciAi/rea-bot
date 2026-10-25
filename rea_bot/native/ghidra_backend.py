@@ -169,9 +169,21 @@ def _verified(root):
     archives = (ghidra_home() / "cache" / PIN["filename"], root.parent / PIN["filename"])
     for archive in dict.fromkeys(archives):
         try:
-            manifest = _archive_manifest(archive)
-            if _tree_manifest(root) != manifest:
-                return None
+            with _trusted_archive(archive) as package:
+                manifest = _package_manifest(package)
+                if _tree_manifest(root) != manifest:
+                    return None
+                # Launch scripts and the native decompiler must be executable,
+                # while ordinary resources must not gain executable bits.
+                for info in package.infolist():
+                    if info.is_dir():
+                        continue
+                    target = root.joinpath(*PurePosixPath(info.filename).parts[1:])
+                    expected_mode = info.external_attr >> 16
+                    actual_mode = target.stat().st_mode
+                    if actual_mode & 0o7000 or (expected_mode and
+                            actual_mode & 0o111 != expected_mode & 0o111):
+                        return None
             if PIN["version_line"] not in (root / PIN["properties_rel"]).read_text(errors="replace"):
                 return None
             return root.resolve()
@@ -268,6 +280,14 @@ def _extract(archive, dest):
             if target != root and root not in target.parents:
                 raise ValueError("Ghidra zip contains an unsafe path.")
         package.extractall(dest)
+        # ZipFile.extractall deliberately does not restore UNIX mode metadata.
+        # The complete archive has already passed its pinned digest and safety
+        # checks. Restore only its ordinary file bits, never setuid/setgid/sticky.
+        # No chmod is applied outside entries of this authenticated archive.
+        for info in package.infolist():
+            mode = info.external_attr >> 16
+            if not info.is_dir() and mode:
+                (dest / info.filename).chmod(mode & 0o777)
 
 
 def setup(apply=False, approve=None):

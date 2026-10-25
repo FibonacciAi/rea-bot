@@ -95,3 +95,12 @@ The earlier benchmark/readability tables are retained as historical author repor
 ## G. JavaScript benchmark fairness
 
 `python3 -m unittest tests.test_javascript_benchmark -v` checks that both tool plans receive identical bytes, bundle-only inputs cannot see the map, map extraction is a separate task, input changes are refused, and native-only observations cannot become an equipped ranking. `python3 scripts/benchmark_javascript.py --out /tmp/lw-js-fair-cases` prepares owned inputs and command templates without running any tool or target. The historical Preact 12-versus-1 counts measured different operations; paired Preact/Wakaru results remain unmeasured. See `docs/JAVASCRIPT-BENCHMARK.md`.
+
+
+## Equipped owned validation
+
+`tests.test_real_decoders` uses real LIEF/Capstone ELF decoding into the typed public path and compares owned x86-64 machine results with compiled emitted C. `tests.test_ghidra_equipped` requires explicit `REA_BOT_TEST_GHIDRA=1`, a verified pinned Ghidra installation and JDK; it imports an owned GCC fixture, validates actual post-script execution/counts/private output and checks a target-execution marker remains absent. Missing optional tools do not become passed backend checks.
+
+`tests.test_real_arm64` uses explicit `REA_BOT_ARM64_AS`, `REA_BOT_ARM64_LD` and `REA_BOT_QEMU_AARCH64` tool paths (or installed command names). Scope `REA_BOT_CROSS_LD_LIBRARY_PATH` when cross-binutils libraries are in an approved private tool directory. It assembles a freestanding static ELF with write/exit syscalls, decodes exact symbol bytes and compares QEMU-original outputs with host-GCC emitted C. No guest libc or system registration is needed. These are emulated ARM64 checks, not physical ARM64 execution.
+
+After tool setup is explicitly approved, `REA_BOT_NATIVE_HOME` selects the approved decoder wheel directory. Run `python3 -m unittest tests.test_real_decoders tests.test_real_arm64 tests.test_ghidra_equipped`. Optional evidence destinations are `REA_BOT_REAL_DECODER_EVIDENCE`, `REA_BOT_ARM64_EVIDENCE` and `REA_BOT_GHIDRA_EVIDENCE`; point each outside source/dependency pins. Record distribution versions separately from self-reported library versions (the approved Capstone5.0.9 wheel reports module5.0.7). Setup of the minimum three binary/DWARF wheels does not fabricate the all-component native readiness receipt.

@@ -42,6 +42,8 @@ def _decode(md, insns, arch):
         if pc in rows or size <= 0 or (previous_end is not None and pc < previous_end):
             raise Unsupported('invalid or overlapping instruction bounds')
         previous_end = pc + size
+        if arch == 'x86-64' and m in {'ret', 'retn'} and any(getattr(insn, 'prefix', ())):
+            raise Unsupported('prefixed implicit stack/control effects are unsupported')
         if m not in allowed:
             raise Unsupported('unsupported CFG instruction: ' + m)
         if (arch == 'x86-64' and (m in {'adds', 'subs', 'ands', 'cmn', 'tst', 'orr', 'eor', 'b', 'cbz', 'cbnz', 'tbz', 'tbnz'} or m.startswith('b.'))) or (arch == 'arm64' and (m in {'imul', 'bt', 'bswap', 'jmp', 'retn', 'test', 'xor', 'or'} or m.startswith('j'))):

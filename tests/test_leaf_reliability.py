@@ -117,6 +117,23 @@ class ConservativeFallbacks(unittest.TestCase):
         self.reject(program(('mov', M('rsp', -4), R('edi')), ('mov', M('rsp', -6), R('esi')),
                             ('mov', R('eax'), R('edi')), ('ret',)), 'overlapping')
 
+    def test_frame_push_invalidates_overlapping_cached_red_zone_spills(self):
+        # The push replaces the tracked bytes with an unknown caller frame value.
+        self.reject(program(('mov', M('rsp', -8), R('edi')), ('push', R('rbp')),
+                            ('mov', R('rbp'), R('rsp')), ('mov', R('eax'), M('rbp', 0)),
+                            ('pop', R('rbp')), ('ret',)), 'frame')
+        self.reject(program(('mov', M('rsp', -4), R('edi')), ('push', R('rbp')),
+                            ('pop', R('rbp')), ('mov', R('eax'), M('rsp', -4)), ('ret',)), 'unknown stack slot')
+
+    def test_positive_stack_excursions_cannot_hide_implicit_caller_writes(self):
+        self.reject(program(('add', R('rsp'), C(16)), ('push', R('rbp')), ('pop', R('rbp')),
+                            ('sub', R('rsp'), C(16)), ('mov', R('rax'), R('rdi')), ('ret',)), 'caller/control')
+
+    def test_hidden_prefix_on_implicit_stack_or_return_effects_is_refused(self):
+        insns = program(('mov', R('eax'), R('edi')), ('ret',))
+        insns[-1].prefix = [0, 0, 0x66, 0]
+        self.reject(insns, 'prefixed implicit')
+
     def test_unrestored_stack_and_link_register_fall_back_without_execution(self):
         self.reject(program(('sub', R('rsp'), C(8)), ('mov', R('eax'), C(7)), ('ret',)), 'restore')
         reasons = []

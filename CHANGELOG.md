@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+- Equipped owned validation found and repaired cached stack spills surviving a frame push, implicit PUSH writes into caller state after positive stack excursions, and hidden x86 operand/address-size prefixes on implicit stack/control effects. Unsupported cases now refuse translation.
+- Restore authenticated ZIP executable modes during Ghidra extraction, strip privilege bits and verify executable-mode identity. The former extraction produced non-executable launchers/native decompiler and failed exit 126.
+- Add actual LIEF/Capstone machine/C differentials, real Ghidra Java post-script/owned-target checks and freestanding ARM64 QEMU differentials. Emulation is distinct from physical ARM64 validation.
 - Reject metadata control characters before Ghidra config serialization; defend the post-script against duplicate control directives and redirected output. Refuse unsupported mixed ABI classes or missing formal GP bindings during DWARF naming.
 - Repair fresh owned differential failures with typed joins, width truncation/zero-extension, signed-overflow flags, operand-width BT indices and explicit unsupported effects. Validate parameter names and substitute DWARF names simultaneously to avoid changing values through aliasing.
 - Withdraw the Preact/Wakaru ranking: source-map content extraction was compared with structural bundle unpacking. Prepare separate equal-input structural, heuristic and map-content cases; paired results remain unmeasured until an equipped run.

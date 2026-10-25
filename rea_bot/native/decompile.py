@@ -84,6 +84,8 @@ def _decode(md, insns, arch):
         except Exception as err:
             raise Unsupported("operand decoding failed") from err
         m = insn.mnemonic
+        if arch == 'x86-64' and m in {'push', 'pop', 'leave', 'ret', 'retn'} and any(getattr(insn, 'prefix', ())):
+            raise Unsupported('prefixed implicit stack/control effects are unsupported')
         if m not in allowed:
             raise Unsupported("unsupported instruction: " + m)
         if getattr(insn, "writeback", False):
@@ -183,6 +185,8 @@ def _read(state, op):
             raise Unsupported("read of unknown register: " + op["r"])
         return state.regs[key]
     key = _slot(state, op)
+    if any(max(key, saved) < min(key + state.bits // 8, saved + 8) for saved in state.frames):
+        raise Unsupported('stack read overlaps saved frame state')
     if key not in state.slots:
         raise Unsupported("read of unknown stack slot")
     return state.slots[key]
@@ -215,7 +219,13 @@ def _execute(state, item):
     if m in _SKIP:
         return
     if m == "push":
+        if state.sp > 0:
+            raise Unsupported('frame push overlaps caller/control stack state')
         state.sp -= 8
+        # The physical push overwrites all cached scalar spills it overlaps.
+        # Those bytes stay overwritten even after a later frame pop.
+        state.slots = {key: value for key, value in state.slots.items()
+                       if max(key, state.sp) >= min(key + state.bits // 8, state.sp + 8)}
         state.frames[state.sp] = state.fp
         return
     if m in {"pop", "leave"}:
@@ -242,6 +252,8 @@ def _execute(state, item):
         if state.arch == 'arm64' and ops[-1]['n'] % 16:
             raise Unsupported('AArch64 stack alignment must remain 16 bytes')
         state.sp += ops[-1]["n"] * (1 if m == "add" else -1)
+        if state.sp > 0:
+            raise Unsupported("stack adjustment enters caller/control state above entry")
         state.flags = None
         return
     if m in {"mov", "ldr", "str"} and len(ops) == 2:
@@ -494,10 +506,16 @@ def decompile_function(md, insns, arch, parameters=None, names=None, strings=Non
     return lines
 
 
-def decompile_sketch(md, insns, arch, **kwargs):
-    """Unverified structural analysis only; never an executable translation."""
+def decompile_sketch(md, insns, arch, parameters=None, **kwargs):
+    """Readable inspection text, preferring the reviewed finite leaf subset.
+
+    Broader body output remains heuristic and cannot establish equivalence.
+    """
+    leaf = _leaf_function(md, insns, arch, parameters, abi=kwargs.get('convention'))
+    if leaf is not None:
+        return leaf
     from .body import decompile_body
     try:
-        return decompile_body(md, insns, arch, **kwargs)
+        return decompile_body(md, insns, arch, parameters=parameters, **kwargs)
     except Exception:
         return None
