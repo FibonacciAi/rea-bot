@@ -43,7 +43,7 @@ Milestone 1 is unchanged for a leaf: one `if` or one `while`, no calls, at most 
 - String literals that resolve are quoted in the call, including a pointer into the middle of one. Other large addresses are `data_%x`, which the unnamed-token metric counts.
 - A non-stack `[base + disp]` with no index is a field access when that same base is read at two or more offsets at least 4 bytes apart. One offset, or two offsets a couple of bytes apart, stays `mem`. The base has to be a real name: an `argN` or `sub_…` base stays `mem`, so the recovery does not add unnamed tokens. `readdir`'s result uses the glibc dirent names (`d_ino`, `d_off`, `d_reclen`, `d_type`, `d_name`) when two of those offsets appear. On x86-64, a buffer passed to `stat`, `fstat`, `lstat`, or `fstatat` uses the glibc `struct stat` names on the same rule. A stored `readdir`, `opendir`, `fopen`, `getenv`, `strdup`, `strchr`, `strrchr`, or `strstr` result is named for that call (`entry`, `dir`, `stream`, `env`, `copy`, `match`) instead of `call_N`.
 - An indirect tail is `indirect();`, or `name();` when the PLT or GOT slot names it. A jump out of the function is a tail call, `name();` or `sub_%x();`, not `goto` to a raw address. A `goto` that only reaches `continue` or `break`, and a `loc: if (c) { body; goto loc; }` with that single back edge, are cleaned up after structuring. A call on the other arm of a `do`/`while` header stays in the loop.
-- Every disassembled function is decompiled. `/bin/ls` (509 functions with text) takes about 2.4 seconds. The discovery cap defaults to 16,000 functions (`REA_BOT_MAX_FUNCTIONS`) and 1,200,000 instructions (`REA_BOT_MAX_INSNS`). ripgrep 14.1.1 ELF arm64 discovers 7,484 functions and decompiles 7,463, in about 94 seconds. The cap does not truncate that run. Ghidra's decompiler runs as one headless session.
+- Every disassembled function is decompiled. `/bin/ls` (509 functions with text) takes about 2.5 seconds. The discovery cap defaults to 16,000 functions (`REA_BOT_MAX_FUNCTIONS`) and 1,200,000 instructions (`REA_BOT_MAX_INSNS`). ripgrep 14.1.1 ELF arm64 discovers 7,484 functions and decompiles 7,463, in 98.5 seconds. The cap does not truncate that run. Ghidra's decompiler runs as one headless session.
 - Discovery counts each `.plt` / `.plt.sec` / `.plt.got` stub, each `.init` and `.fini`, and each named GOT slot. A GOT slot is not code: its body is `name();`. Init arrays and relative relocations contribute a function only when the address lands in an executable gap. On x86-64, a CET `endbr64` in a gap is an entry. An approximate range (prologue, gap, entry, symbol, or call target) is split at the first real instruction after `ret` or `udf` padding, unless an earlier instruction in that range branches there, or the range has more than eight such cuts. eh_frame sizes are left whole. A C string may contain a newline or a tab; those are collected after the plain scan, so a file that already hit the 5,000-string cap keeps the same set.
 - Headless Ghidra decompiles every internal function. Before that, a DWARF signature or the recovered `main(int argc, char **argv)` is applied with `setName` and `replaceParameters` when the listing's parameter count does not already match. On the measured `/bin/ls`, applying the import catalog as well made other functions noisier, so the analyze path does not do that.
 
@@ -115,15 +115,33 @@ Where the large functions go the other way: `sub_127a0` is 93 against 125, `sub_
 
 Discovery found 7,484 functions. 7,463 have text. `truncated` is false. The native recount after this pass:
 
-| Pass | Functions | Lines | Gotos | Gotos/fn | Unnamed | Addresses | Seconds |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| Native, with stubs | 7463 | 264748 | 6744 | 0.904 | 86123 | 9 | 98.5 |
-| Native, without stubs | 7198 | 264483 | 6744 | 0.937 | 86123 | 9 | 98.5 |
-| Stock Ghidra, previous full decompile | 7386 | 646467 | 18150 | 2.46 | 331934 | 167382 | ~300 |
+| Pass | Functions | Lines | Gotos | Gotos/fn | Unnamed | Addresses | Over 20 | Seconds |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Native, with stubs | 7463 | 264748 | 6744 | 0.904 | 86123 | 9 | 66 | 98.5 |
+| Stock Ghidra, with stubs | 7386 | 646467 | 18150 | 2.457 | 331934 | 167382 | 200 | 340.1 |
+| Native, without stubs | 7198 | 264483 | 6744 | 0.937 | 86123 | 9 | 66 | 98.5 |
+| Stock Ghidra, without stubs | 7118 | 644688 | 18150 | 2.55 | 331933 | 167382 | 200 | 340.1 |
 
-`if (1)` does not occur. The no-stub native rate 0.937 is still under the previous stock rate 2.46, and 7,198 code functions are still ahead of the previous stock text count once PLT and GOT slots are set aside (stock's published 7,386 includes those stubs). Lines went from 260,107 to 264,748 and unnamed tokens from 82,281 to 86,123 against our previous native run. The added lines are the loop braces and the calls that replaced raw-address gotos. Address literals went from 82 to 9. Runtime is 98.5 seconds against the previous 94. The extra tidy walks and the field pass account for the difference. It is still well under the stock decompile.
+`if (1)` does not occur on either side. The no-stub native rate 0.937 is under the stock rate 2.55, and 7,198 code functions are ahead of stock's 7,118 once PLT and GOT slots are set aside. Lines went from 260,107 to 264,748 and unnamed tokens from 82,281 to 86,123 against our previous native run. The added lines are the loop braces and the calls that replaced raw-address gotos. Address literals went from 82 to 9. Runtime is 98.5 seconds against the previous 94, and against 340.1 for this stock run. The extra tidy walks and the field pass account for the native difference. Mean token similarity is 0.203 on 7,206 matched functions, up from 0.197 on 7,057.
 
-Sixty-six native functions have more than 20 gotos. The worst are `sub_1cfcdc` (222), `sub_1cac8c` (174), `sub_1d57a4` (138), `sub_24b8f0` (93), and `sub_d49b0` (92). They are the same flat condition DAGs as the `/bin/ls` leftovers, larger. A per-function stock comparison for this binary was not finished in this run; the previous mean token similarity was 0.197 on 7,057 functions. About 82 stock `.text` starts still sit inside a native range.
+Sixty-six native functions have more than 20 gotos. The worst are `sub_1cfcdc` (222), `sub_1cac8c` (174), `sub_1d57a4` (138), `sub_24b8f0` (93), and `sub_d49b0` (92). Stock has 200 functions over 20, and its worst is `FUN_002cfcc8` at 253. The zero-over-20 bar is not met.
+
+208 matched functions still have more gotos than the stock function at the same address. Each block is emitted once, so an edge into a block the region already placed, or into the middle of a loop, stays a goto. Stock structured those joins. Copying the shared blocks would reprint the calls, so the gotos are left. The ten largest gaps:
+
+| Function | Native gotos | Stock gotos | Gap |
+| --- | --- | --- | --- |
+| `sub_2740b0` | 91 | 57 | 34 |
+| `sub_1833b0` | 29 | 5 | 24 |
+| `sub_1c83f0` | 36 | 21 | 15 |
+| `sub_14d688` | 25 | 13 | 12 |
+| `sub_1bb888` | 78 | 68 | 10 |
+| `sub_1b1ef0` | 32 | 22 | 10 |
+| `sub_1b7780` | 45 | 36 | 9 |
+| `sub_26e7d4` | 14 | 5 | 9 |
+| `sub_1a8f70` | 20 | 12 | 8 |
+| `sub_19c3d8` | 14 | 6 | 8 |
+
+The other 198 gaps are smaller. `python3 scripts/scoreboard.py --ghidra` on this binary reprints every one. Edges inside each of those 208 functions were not recounted one by one; the reason is the structurer's rule, the same one that leaves the eighteen `/bin/ls` misses.
 
 ## Stripped C++ sample
 
@@ -142,7 +160,7 @@ The virtual-call loop keeps the null check and the indirect call inside the `do`
 
 ## Scorecard
 
-BEAT means the native number is on the winning side. TIE means the numbers match. The ripgrep stock row is the previous full decompile, not a second headless run this pass.
+BEAT means the native number is on the winning side. TIE means the numbers match. The ripgrep stock row is the headless run from this pass (340.1 seconds, no name injection).
 
 | Target | Stock | Native | Result |
 | --- | --- | --- | --- |
@@ -156,27 +174,30 @@ BEAT means the native number is on the winning side. TIE means the numbers match
 | `/bin/ls` strings | 492 | 536 | BEAT |
 | `/bin/ls` token similarity | 0.193 | 0.233 | BEAT |
 | `/bin/ls` functions over 20 gotos | 8 | 7 | BEAT |
-| ripgrep gotos/fn with stubs | 2.46 | 0.904 | BEAT |
-| ripgrep functions with text | 7386 | 7463 | BEAT |
+| ripgrep gotos/fn with stubs | 2.457 | 0.904 | BEAT |
+| ripgrep gotos/fn without stubs | 2.55 | 0.937 | BEAT |
+| ripgrep functions with stubs | 7386 | 7463 | BEAT |
+| ripgrep functions without stubs | 7118 | 7198 | BEAT |
 | ripgrep unnamed tokens | 331934 | 86123 | BEAT |
 | ripgrep address literals | 167382 | 9 | BEAT |
 | ripgrep `if (1)` | 0 | 0 | TIE |
-| ripgrep runtime | ~300 s | 98.5 s | BEAT |
+| ripgrep functions over 20 gotos | 200 | 66 | BEAT |
+| ripgrep token similarity | 0.197 | 0.203 | BEAT |
+| ripgrep runtime | 340.1 s | 98.5 s | BEAT |
 | shapes gotos/fn, both views | 0 | 0 | TIE |
 | shapes functions with stubs | 29 | 31 | BEAT |
 | shapes functions without stubs | 18 | 18 | TIE |
 | shapes unnamed tokens | 133 | 21 | BEAT |
 | shapes address literals | 12 | 0 | BEAT |
 
-No function on `/bin/ls` or the C++ sample was left with more than Ghidra's goto count without being listed above. The "no function worse than Ghidra" bar is not met on `/bin/ls`: the eighteen functions in the table are the misses. The "no function over 20 gotos" bar is not met on `/bin/ls` (7) or ripgrep (66).
+The C++ sample has no function with more gotos than stock. The "no function worse than Ghidra" bar is not met on `/bin/ls` (eighteen functions) or on ripgrep (208 functions). The "no function over 20 gotos" bar is not met on `/bin/ls` (7) or ripgrep (66). Stock is also over that bar: 8 functions on `/bin/ls`, 200 on ripgrep.
 
 ## Still open
 
-- The eighteen `/bin/ls` functions above, and the sixty-six ripgrep functions over 20 gotos. Closing them by copying every shared block would reprint calls. Region copy stays capped.
+- The eighteen `/bin/ls` functions above, the 208 ripgrep functions with more gotos than stock, and the sixty-six ripgrep functions over 20 gotos. Closing them by copying every shared block would reprint calls. Region copy stays capped.
 - `sub_14790` is 81 gotos, one more than the previous native text, because a literal comparison dropped an arm.
 - The C++ `total` loop returns 0 on the join. A real meet of the incoming registers is not done; the decompiler still copies one predecessor.
-- About 82 Ghidra `.text` starts on ripgrep remain inside a native function. A cut targeted by an earlier branch stays in that function, and a range with more than eight return cuts stays whole.
-- Ripgrep's per-function stock comparison and a fresh token similarity were not remeasured this pass. The previous mean was 0.197.
+- An earlier count found about 82 stock `.text` starts on ripgrep inside a native function. This headless run did not recount that overlap. A cut targeted by an earlier branch stays in that function, and a range with more than eight return cuts stays whole.
 - x86-32 and arm32 calls and stack arguments.
 - Field recovery names an offset. It does not invent a C type declaration, and it does not apply the x86-64 `struct stat` layout on arm64.
 - WAT output is not emitted. Wasm parsing still stores code sizes, not a decoded module.
