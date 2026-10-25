@@ -147,6 +147,47 @@ class CountedLoops(unittest.TestCase):
         self.assertNotIn("goto", text)
 
 
+class JoinPlacement(unittest.TestCase):
+    def test_nested_join_is_emitted_once_after_the_if(self):
+        text = _text([
+            {"start": 0, "kind": "if", "cond": "a", "succs": [1, 2], "stmts": []},
+            {"start": 1, "kind": "if", "cond": "b", "succs": [3, 4], "stmts": []},
+            {"start": 3, "kind": "goto", "succs": [5], "stmts": ["x = 1;"]},
+            {"start": 4, "kind": "goto", "succs": [5], "stmts": ["x = 2;"]},
+            {"start": 2, "kind": "goto", "succs": [5], "stmts": ["x = 3;"]},
+            {"start": 5, "kind": "ret", "succs": [], "stmts": ["return x;"]},
+        ])
+        self.assertIn("x = 1;", text)
+        self.assertIn("x = 2;", text)
+        self.assertIn("x = 3;", text)
+        self.assertIn("return x;", text)
+        self.assertNotIn("goto", text)
+
+    def test_constant_return_tail_is_duplicated(self):
+        text = _text([
+            {"start": 0, "kind": "if", "cond": "n > 0", "succs": [1, 3], "stmts": []},
+            {"start": 1, "kind": "if", "cond": "flag", "succs": [4, 2], "stmts": []},
+            {"start": 2, "kind": "goto", "succs": [0], "stmts": ["n = (n - 1);"]},
+            {"start": 3, "kind": "ret", "succs": [], "stmts": ["return 0;"]},
+            {"start": 4, "kind": "ret", "succs": [], "stmts": ["return 4;"]},
+        ])
+        self.assertIn("while", text)
+        self.assertIn("return 4;", text)
+        self.assertIn("return 0;", text)
+        self.assertNotIn("goto", text)
+
+    def test_jo_is_signed_overflow_and_dead_stores_drop(self):
+        from rea_bot.native.body import _overflow_cond, drop_dead_stores
+        text = _overflow_cond({"k": "add", "l": "a", "r": "b", "bits": 32}, False)
+        self.assertIn("a + b", text)
+        self.assertIn("-2147483648", text)
+        self.assertNotIn("if (1)", "if (%s)" % text)
+        self.assertEqual(drop_dead_stores(["local_10 = arg0;", "return 1;"]), ["return 1;"])
+        self.assertEqual(drop_dead_stores(["call_1 = sub_10(arg0);", "return 1;"]),
+                         ["sub_10(arg0);", "return 1;"])
+        self.assertEqual(drop_dead_stores(["n = (n - 1);", "return n;"]), ["n = (n - 1);", "return n;"])
+
+
 class Simplify(unittest.TestCase):
     def test_folds_identities_and_constants_outside_strings(self):
         self.assertEqual(simplify_line("n = (n + 0);"), "n = n;")

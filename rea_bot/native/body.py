@@ -73,7 +73,7 @@ def decompile_body(md, insns, arch, parameters=None, names=None, strings=None, c
     header = _header(blocks, parameters)
     if header:
         text = header + "\n" + text
-    return [line for line in text.split("\n") if line.strip()]
+    return drop_dead_stores([line for line in text.split("\n") if line.strip()])
 
 
 def _m(item):
@@ -267,6 +267,7 @@ def _dataflow(blocks, by, arch, convention, names, strings, memory):
                 block, state, arch, convention, names, strings, memory)
             if block["switch"]:
                 block["switch_targets"] = [row[1] for row in block["switch"]["cases"]]
+    _propagate_flags(blocks, by)
 
 
 def _exec(block, state, arch, convention, names, strings, memory):
@@ -274,6 +275,7 @@ def _exec(block, state, arch, convention, names, strings, memory):
     cond = None
     switch = None
     calls = []
+    defined = False
     for index, item in enumerate(block["insns"]):
         mnem = _m(item)
         ops = item["ops"]
@@ -291,6 +293,8 @@ def _exec(block, state, arch, convention, names, strings, memory):
                     stmts.append(rendered + ";")
                 calls.append((rendered, argc_args))
             _clobber(state, convention, keep=("rax", "eax", "x0", "w0") if var else ())
+            state["flags"] = None
+            defined = True
             continue
         if mnem == "movsxd" and len(ops) >= 2 and ops[1]["k"] == "mem" and ops[1].get("index"):
             switch = _switch_from(state, item, block["insns"][index:], memory, strings)
@@ -302,10 +306,13 @@ def _exec(block, state, arch, convention, names, strings, memory):
             _move(state, ops[0], ops[1] if len(ops) > 1 else {"k": "?"}, mnem, strings)
             continue
         if mnem == "test" and len(ops) >= 2 and ops[0] == ops[1]:
-            state["flags"] = (_rval(state, ops[0], strings), "0")
+            state["flags"] = {"k": "test", "l": _rval(state, ops[0], strings), "r": "0", "bits": _op_bits(ops, arch)}
+            defined = True
             continue
         if mnem in {"cmp", "test"} and len(ops) >= 2:
-            state["flags"] = (_rval(state, ops[0], strings), _rval(state, ops[1], strings))
+            state["flags"] = {"k": mnem, "l": _rval(state, ops[0], strings), "r": _rval(state, ops[1], strings),
+                              "bits": _op_bits(ops, arch)}
+            defined = True
             continue
         if mnem in {"add", "sub"} and ops and ops[0]["k"] == "reg" and ops[0]["r"] in {"rsp", "esp", "sp"}:
             imm = next((op["n"] for op in ops if op["k"] == "imm"), None)
@@ -316,7 +323,10 @@ def _exec(block, state, arch, convention, names, strings, memory):
             op = "+" if mnem == "add" else "-"
             right = _rval(state, ops[-1], strings)
             left = _rval(state, ops[-2], strings) if len(ops) >= 3 else _get(state, ops[0]["r"])
-            _set(state, ops[0]["r"], "(%s %s %s)" % (_num(left), op, _num(right)))
+            result = "(%s %s %s)" % (_num(left), op, _num(right))
+            _set(state, ops[0]["r"], result)
+            state["flags"] = {"k": mnem, "l": left, "r": right, "res": result, "bits": _op_bits(ops, arch)}
+            defined = True
             continue
         if mnem in {"add", "sub"} and ops and ops[0]["k"] == "mem":
             key = _slot(state, ops[0])
@@ -328,10 +338,44 @@ def _exec(block, state, arch, convention, names, strings, memory):
             continue
         if mnem == "xor" and len(ops) >= 2 and ops[0]["k"] == "reg" and ops[1]["k"] == "reg" and ops[0]["r"] == ops[1]["r"]:
             _set(state, ops[0]["r"], "0")
+            state["flags"] = {"k": "xor", "l": "0", "r": "0", "res": "0", "bits": _op_bits(ops, arch)}
+            defined = True
             continue
-        if mnem in {"and", "or"} and ops and ops[0]["k"] == "reg" and len(ops) >= 2:
-            sym = "&" if mnem == "and" else "|"
-            _set(state, ops[0]["r"], "(%s %s %s)" % (_get(state, ops[0]["r"]), sym, _rval(state, ops[1], strings)))
+        if mnem in {"and", "or", "xor"} and ops and ops[0]["k"] == "reg" and len(ops) >= 2:
+            sym = {"and": "&", "or": "|", "xor": "^"}[mnem]
+            left = _get(state, ops[0]["r"])
+            right = _rval(state, ops[1], strings)
+            result = "(%s %s %s)" % (left, sym, right)
+            _set(state, ops[0]["r"], result)
+            state["flags"] = {"k": mnem, "l": left, "r": right, "res": result, "bits": _op_bits(ops, arch)}
+            defined = True
+            continue
+        if mnem == "bt" and len(ops) >= 2:
+            state["flags"] = {"k": "bt", "l": _rval(state, ops[0], strings), "r": _rval(state, ops[1], strings),
+                              "bits": _op_bits(ops, arch)}
+            defined = True
+            continue
+        if mnem in {"comiss", "comisd", "ucomiss", "ucomisd"} and len(ops) >= 2:
+            state["flags"] = {"k": "cmp", "l": _rval(state, ops[0], strings), "r": _rval(state, ops[1], strings),
+                              "bits": 64 if mnem.endswith("sd") else 32}
+            defined = True
+            continue
+        if mnem in {"fcomi", "fcomip", "fcompi", "fucomi", "fucomip", "fucompi"} and ops:
+            state["flags"] = {"k": "cmp", "l": "st", "r": _rval(state, ops[0], strings), "bits": 80}
+            defined = True
+            continue
+        if mnem in {"imul", "mul"} and ops:
+            if mnem == "imul" and ops[0]["k"] == "reg" and len(ops) >= 2:
+                right = _rval(state, ops[-1], strings)
+                left = _rval(state, ops[-2], strings) if len(ops) >= 3 else _get(state, ops[0]["r"])
+                result = "(%s * %s)" % (_num(left), _num(right))
+                _set(state, ops[0]["r"], result)
+            else:
+                right = _rval(state, ops[0], strings)
+                left = _get(state, "rax" if arch == "x86-64" else "x0")
+                result = "(%s * %s)" % (_num(left), _num(right))
+            state["flags"] = {"k": mnem, "l": left, "r": right, "res": result, "bits": _op_bits(ops, arch)}
+            defined = True
             continue
         if mnem.startswith("ldr") and ops and ops[0]["k"] == "reg":
             mem = next((op for op in ops[1:] if op["k"] == "mem"), None)
@@ -352,6 +396,7 @@ def _exec(block, state, arch, convention, names, strings, memory):
         stmts.append("return %s;" % (_num(expr) if expr and expr not in {"eax", "rax", "w0", "x0"} else "0"))
     cond = _cond(state, block["insns"][-1]) if block["kind"] == "if" else None
     block["calls"] = calls
+    block["flags_local"] = defined
     return stmts, state, cond, switch
 
 
@@ -527,15 +572,154 @@ def _cond(state, item):
     if mnem == "cbnz" and item["ops"] and item["ops"][0]["k"] == "reg":
         return "%s != 0" % _get(state, item["ops"][0]["r"])
     flags = state.get("flags")
-    if mnem in {"js", "jns"} and flags:
+    if not isinstance(flags, dict):
+        return None
+    kind = flags.get("k")
+    if mnem in {"js", "jns"} and kind in {"cmp", "test"}:
         # SF after test/cmp. `js` is not `jl`: signed less is SF xor OF.
         op = "<" if mnem == "js" else ">="
-        if str(flags[1]) in {"0", "0x0"}:
-            return "%s %s 0" % (_num(flags[0]), op)
-        return "(%s - %s) %s 0" % (_num(flags[0]), _num(flags[1]), op)
-    if mnem in _COND and flags:
-        return "%s %s %s" % (_num(flags[0]), _COND[mnem], _charish(flags[1]))
+        if str(flags.get("r")) in {"0", "0x0"}:
+            return "%s %s 0" % (_num(flags.get("l")), op)
+        return "(%s - %s) %s 0" % (_num(flags.get("l")), _num(flags.get("r")), op)
+    if mnem in {"js", "jns"} and flags.get("res"):
+        op = "<" if mnem == "js" else ">="
+        return "%s %s 0" % (_num(flags["res"]), op)
+    if kind == "bt":
+        bit = "((%s >> %s) & 1)" % (_num(flags.get("l")), _num(flags.get("r")))
+        if mnem in {"jb", "jc", "jnae"}:
+            return "%s != 0" % bit
+        if mnem in {"jae", "jnb", "jnc"}:
+            return "%s == 0" % bit
+    if mnem in {"jo", "jno", "b.vs", "b.vc"}:
+        return _overflow_cond(flags, mnem in {"jno", "b.vc"})
+    if mnem in _COND and kind in {"cmp", "test", "sub"}:
+        return "%s %s %s" % (_num(flags.get("l")), _COND[mnem], _charish(flags.get("r")))
+    if mnem in {"je", "jz", "jne", "jnz", "b.eq", "b.ne"} and flags.get("res"):
+        op = "==" if mnem in {"je", "jz", "b.eq"} else "!="
+        return "%s %s 0" % (_num(flags["res"]), op)
     return None
+
+
+def _overflow_cond(flags, inverted):
+    """Signed overflow of the flag-setting operation, or its negation for jno."""
+    kind = flags.get("k")
+    bits = int(flags.get("bits") or 64)
+    if kind in {"or", "and", "xor", "test"}:
+        # These clear the overflow flag, so jo is false and jno is true.
+        return "0 == 0" if inverted else "0 != 0"
+    if kind == "add":
+        expr = "(%s + %s)" % (_num(flags.get("l")), _num(flags.get("r")))
+    elif kind in {"sub", "cmp"}:
+        expr = "(%s - %s)" % (_num(flags.get("l")), _num(flags.get("r")))
+    elif kind in {"mul", "imul"}:
+        expr = "(%s * %s)" % (_num(flags.get("l")), _num(flags.get("r")))
+    else:
+        return None
+    limit = 1 << (bits - 1)
+    cond = "(%s < %s || %s > %s)" % (expr, _num(-limit), expr, _num(limit - 1))
+    if inverted:
+        return "!(%s)" % cond
+    return cond
+
+
+def _op_bits(ops, arch):
+    for op in ops:
+        if op.get("k") == "reg":
+            return _reg_bits(op.get("r") or "", arch)
+    return 64
+
+
+def _reg_bits(reg, arch):
+    if arch == "arm64":
+        return 32 if reg.startswith("w") else 64
+    if _is32(reg):
+        return 32
+    return 64
+
+
+def _propagate_flags(blocks, by):
+    """Copy flags through blocks that do not set them, when every predecessor agrees."""
+    preds = _preds({block["start"]: block["succs"] for block in blocks})
+    for _ in range(64):
+        changed = False
+        for block in blocks:
+            if block.get("flags_local"):
+                continue
+            incoming = []
+            ready = True
+            for pred in preds.get(block["start"], []):
+                out = by[pred].get("out")
+                if not out:
+                    ready = False
+                    break
+                incoming.append(out.get("flags"))
+            agreed = None
+            if ready and incoming and all(item is not None and item == incoming[0] for item in incoming):
+                agreed = incoming[0]
+            out = block.get("out")
+            if not out or out.get("flags") == agreed:
+                continue
+            out["flags"] = agreed
+            changed = True
+            if block.get("kind") == "if" and block.get("insns"):
+                block["cond"] = _cond(out, block["insns"][-1])
+        if not changed:
+            break
+
+
+def drop_dead_stores(lines):
+    """Remove assignments whose name is never read. A call on the right stays."""
+    current = list(lines or [])
+    for _ in range(8):
+        updated = _drop_dead_once(current)
+        if updated == current:
+            return current
+        current = updated
+    return current
+
+
+def _drop_dead_once(lines):
+    reads = {}
+    for line in lines:
+        for name in _code_idents(line):
+            reads[name] = reads.get(name, 0) + 1
+    for line in lines:
+        match = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*) = ", line)
+        if match and reads.get(match.group(1), 0):
+            reads[match.group(1)] -= 1
+    kept = []
+    for line in lines:
+        match = re.match(r"^(\s*)([A-Za-z_][A-Za-z0-9_]*) = (.*);$", line)
+        if not match or reads.get(match.group(2), 0):
+            kept.append(line)
+            continue
+        expr = match.group(3).strip()
+        if _is_call_expr(expr):
+            kept.append("%s%s;" % (match.group(1), expr))
+            continue
+        if "(" in expr:
+            kept.append(line)
+            continue
+    return kept
+
+
+def _code_idents(text):
+    visible = re.sub(r'"[^"]*"', " ", text or "")
+    return re.findall(r"[A-Za-z_][A-Za-z0-9_]*", visible)
+
+
+def _is_call_expr(expr):
+    if not re.match(r"[A-Za-z_][A-Za-z0-9_]*\(", expr or ""):
+        return False
+    depth = 0
+    for index, char in enumerate(expr):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return index == len(expr) - 1
+    return False
 
 
 def _charish(value):

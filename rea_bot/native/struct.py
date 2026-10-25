@@ -100,6 +100,8 @@ class _Structurer(object):
         self._sweep()
 
     def render(self):
+        self._drop_fallthrough_gotos()
+        self._drop_empty_ifs()
         needed = set()
         for kind, val in self.out:
             if kind != "line":
@@ -190,24 +192,37 @@ class _Structurer(object):
             self._emit(kid, barriers, ctx, depth + 1)
 
     def _emit_follow(self, node, barriers, ctx, depth):
-        follow = self._follow(node)
+        follow = self._follow(node, ctx)
         if follow is None or follow in barriers or follow in self.emitted or _in_loop(follow, ctx):
             return
         self._emit(follow, barriers, ctx, depth + 1)
 
-    def _follow(self, node):
+    def _follow(self, node, ctx=None):
         follow = self.ipdom.get(node)
         if follow is None or follow not in self.by:
             return None
+        # Already emitted by another entry: a barrier would fall through past it.
+        if follow in self.emitted and self.idom.get(follow) != node:
+            return None
         if self.idom.get(follow) == node:
             return follow
-        return None
+        # Dominated, but not immediately: the immediate dominator emits it.
+        if node in self.dom.get(follow, ()):
+            return None
+        # Multi-entry post-dominator. Emit it once after this node so each arm
+        # falls through, and do not pull it out of a loop that is already open.
+        loop = _loop_of(ctx or [])
+        if loop:
+            body = (self.loops.get(loop["header"]) or {}).get("body") or set()
+            if follow not in body and follow != loop.get("exit"):
+                return None
+        return follow
 
     def _write_if(self, node, barriers, ctx, depth):
         cond, then_n, else_n, consumed = self._fold(node)
         for extra in consumed:
             self.emitted.add(extra)
-        follow = self._follow(node)
+        follow = self._follow(node, ctx)
         merges = self._merges(node)
         branch_barriers = set(barriers)
         if follow is not None:
@@ -366,8 +381,17 @@ class _Structurer(object):
         return decision
 
     def _realize_decision(self, decision, src, target, barriers, ctx, depth):
+        if decision[0] == "dup":
+            for line in decision[1]:
+                self.emit_line(line)
+            return
         if decision[0] == "inline":
             if target in self.emitted:
+                dup = self._small_tail(target)
+                if dup:
+                    for line in dup:
+                        self.emit_line(line)
+                    return
                 self.emit_line("goto loc_%x;" % target)
                 return
             self._emit(target, barriers, ctx, depth + 1)
@@ -406,10 +430,71 @@ class _Structurer(object):
             if copied is not None:
                 return ("line", "return %s;" % copied)
         # First reach owns the block. A detected follow is already a barrier, so it
-        # is not pulled into the first branch. Later reaches goto.
+        # is not pulled into the first branch. Later reaches goto, unless the tail is
+        # a constant return that can be duplicated.
         if target not in self.emitted:
             return ("inline", None)
+        dup = self._small_tail(target)
+        if dup:
+            return ("dup", dup)
         return ("line", "goto loc_%x;" % target)
+
+    def _small_tail(self, target):
+        """Duplicate a tiny tail that ends in a constant return.
+
+        Splitting that tail removes a goto without falling into the original copy.
+        A region that reaches a loop or another join is left shared.
+        """
+        return _constant_tail(self.by, self.succs, self.loops, target, set(), 4)
+
+    def _drop_fallthrough_gotos(self):
+        for _ in range(4):
+            if not self._drop_fallthrough_once():
+                return
+
+    def _drop_fallthrough_once(self):
+        visible = []
+        for index, (kind, val) in enumerate(self.out):
+            if kind == "at":
+                visible.append((None, "loc_%x:" % val))
+            elif kind == "line":
+                visible.append((index, val))
+            elif kind == "leave_init" and val[0] in self.leave_used:
+                visible.append((None, "leave_%x = 0;" % val[0]))
+        lines = [text for _, text in visible]
+        stack = []
+        states = []
+        for text in lines:
+            states.append(list(stack))
+            _track_brace(stack, text)
+        drop = []
+        for pos, (index, text) in enumerate(visible):
+            if index is None:
+                continue
+            match = re.fullmatch(r"goto loc_([0-9a-fA-F]+);", text.strip())
+            if not match:
+                continue
+            if _falls_to(lines, pos, match.group(1), states[pos]):
+                drop.append(index)
+        if not drop:
+            return False
+        gone = set(drop)
+        self.out = [item for index, item in enumerate(self.out) if index not in gone]
+        return True
+
+    def _drop_empty_ifs(self):
+        lines = [(index, val) for index, (kind, val) in enumerate(self.out) if kind == "line"]
+        drop = []
+        for pos, (index, text) in enumerate(lines[:-1]):
+            match = re.fullmatch(r"if \((.*)\) \{", text.strip())
+            if not match or "(" in match.group(1):
+                continue
+            if lines[pos + 1][1].strip() != "}":
+                continue
+            drop.extend((index, lines[pos + 1][0]))
+        if drop:
+            gone = set(drop)
+            self.out = [item for index, item in enumerate(self.out) if index not in gone]
 
     def _apply(self, decision, src, target, barriers, ctx, depth):
         kind, payload = decision
@@ -648,7 +733,7 @@ class _Structurer(object):
                 order.append(target)
                 groups[target] = []
             groups[target].append(index)
-        follow = self._follow(start) or (self._follow(owner) if owner != start else None)
+        follow = self._follow(start, ctx) or (self._follow(owner, ctx) if owner != start else None)
         ctx2 = ctx + [{"kind": "switch", "follow": follow}]
         previous_cases = self.case_targets
         self.case_targets = set(order)
@@ -769,6 +854,130 @@ class _Structurer(object):
         for node in sorted(reach):
             if node not in self.emitted:
                 self._emit(node, set(), [], 0)
+
+
+def _constant_tail(by, succs, loops, target, seen, left):
+    """A small region with no internal goto. Copying it replaces one goto.
+
+    The copy has to end on every path, so it does not also fall into the original.
+    Names that count as unnamed are not duplicated: that would trade one metric for the other.
+    """
+    if left < 0 or target in seen or target in loops or target not in by:
+        return None
+    seen = set(seen)
+    seen.add(target)
+    block = by[target]
+    if block.get("kind") == "ijmp" or block.get("switch"):
+        return None
+    stmts = list(block.get("stmts") or [])
+    if any(stmt.startswith("goto ") for stmt in stmts) or len(stmts) > 4:
+        return None
+    plain = [stmt for stmt in stmts if not stmt.startswith("return ")]
+    ret = [stmt for stmt in stmts if stmt.startswith("return ")]
+    if ret:
+        if len(ret) != 1 or _has_unnamed(plain + ret):
+            return None
+        return plain + ret
+    targets = succs.get(target, [])
+    if block.get("kind") == "if" and len(targets) >= 2 and not plain:
+        then_tail = _constant_tail(by, succs, loops, targets[0], seen, left - 1)
+        else_tail = _constant_tail(by, succs, loops, targets[1], seen, left - 1)
+        if not then_tail or not else_tail or len(then_tail) > 3 or len(else_tail) > 3:
+            return None
+        cond = block.get("cond") or "1"
+        lines = ["if (%s) {" % cond, *("  " + line for line in then_tail), "} else {",
+                 *("  " + line for line in else_tail), "}"]
+        if _has_unnamed(lines):
+            return None
+        return lines
+    if block.get("kind") in {"goto", "fall"} and len(targets) == 1:
+        rest = _constant_tail(by, succs, loops, targets[0], seen, left - 1)
+        if rest is None or _has_unnamed(plain):
+            return None
+        return plain + rest
+    return None
+
+
+_UNNAMED_TAIL = re.compile(
+    r"\b(?:param_\d+|arg\d+\??|FUN_[0-9A-Fa-f]+|sub_[0-9A-Fa-f]+|local_[0-9A-Fa-f]+|mem_[0-9A-Fa-f]+|"
+    r"data_[0-9A-Fa-f]+|undefined\d*|DAT_[0-9A-Fa-f]+)\b")
+
+
+def _has_unnamed(lines):
+    return any(_UNNAMED_TAIL.search(line) for line in lines)
+
+
+def _track_brace(stack, text):
+    raw = re.sub(r'"[^"]*"', '""', text.strip())
+    if raw.startswith("} else"):
+        if stack:
+            stack.pop()
+        stack.append("else")
+    elif raw.startswith("} while"):
+        if stack:
+            stack.pop()
+    elif raw == "}":
+        if stack:
+            stack.pop()
+    elif raw.endswith("{") and "{" in raw:
+        stack.append(_open_kind(raw))
+
+
+def _open_kind(text):
+    if text.startswith("if "):
+        return "if"
+    if text.startswith("while "):
+        return "while"
+    if text.startswith("for "):
+        return "for"
+    if text.startswith("do ") or text == "do {":
+        return "do"
+    if text.startswith("switch "):
+        return "switch"
+    if text.startswith("} else"):
+        return "else"
+    return "block"
+
+
+def _falls_to(lines, index, target, stack):
+    stack = list(stack)
+    pos = index + 1
+    while pos < len(lines):
+        raw = lines[pos].strip()
+        if raw.lower() == "loc_%s:" % target.lower():
+            return True
+        if re.fullmatch(r"loc_[0-9a-fA-F]+:", raw) or raw == ";":
+            pos += 1
+            continue
+        if raw.startswith("} else"):
+            pos = _skip_else(lines, pos)
+            if stack:
+                stack.pop()
+            continue
+        if raw.startswith("} while"):
+            return False
+        if raw == "}":
+            if not stack:
+                return False
+            kind = stack.pop()
+            if kind in {"while", "for", "do", "switch"}:
+                return False
+            pos += 1
+            continue
+        return False
+    return False
+
+
+def _skip_else(lines, pos):
+    depth = 1
+    pos += 1
+    while pos < len(lines):
+        raw = re.sub(r'"[^"]*"', '""', lines[pos].strip())
+        depth += raw.count("{") - raw.count("}")
+        if depth <= 0:
+            return pos + 1
+        pos += 1
+    return pos
 
 
 def _empty(decision):
@@ -906,6 +1115,21 @@ def _loops(succs, dom):
         stay = [succ for succ in succs.get(header, []) if succ in body and succ != header]
         loops[header] = {"body": body, "exit": leave[0] if leave else None,
                          "enter": stay[0] if stay else None, "latches": latches}
+    # A natural loop misses entries the header does not dominate. Pull those cycle
+    # nodes into the body so an edge back to the header can be `continue`.
+    for header, info in loops.items():
+        forward = _reachable(header, succs)
+        backward = _reachable(header, preds)
+        cycle = (forward & backward) | {header}
+        if len(cycle) <= len(info["body"]) or len(cycle) > 400:
+            continue
+        info["body"] = cycle
+        leave = [succ for succ in succs.get(header, []) if succ not in cycle]
+        stay = [succ for succ in succs.get(header, []) if succ in cycle and succ != header]
+        if leave:
+            info["exit"] = leave[0]
+        if stay:
+            info["enter"] = stay[0]
     return loops
 
 
