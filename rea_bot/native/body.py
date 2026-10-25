@@ -154,6 +154,11 @@ def _term(row):
         return "ret", None
     if mnem in {"cbz", "cbnz"} and target is not None:
         return "if", target
+    if mnem in {"tbz", "tbnz"}:
+        imms = [op["n"] for op in row["ops"] if op["k"] == "imm"]
+        # The bit number is the first immediate. The branch target is the last.
+        branch = imms[-1] if len(imms) >= 2 else None
+        return ("if", branch) if branch is not None else ("fall", None)
     if mnem in _COND or (mnem.startswith("j") and mnem != "jmp"):
         return ("if", target) if target is not None else ("fall", None)
     if mnem in {"jmp", "b", "br"} and target is not None and mnem != "br":
@@ -314,19 +319,37 @@ def _exec(block, state, arch, convention, names, strings, memory):
                               "bits": _op_bits(ops, arch)}
             defined = True
             continue
+        if mnem == "cmn" and len(ops) >= 2:
+            # cmn compares against the negation: flags are those of left + right.
+            left = _rval(state, ops[0], strings)
+            right = _rval(state, ops[1], strings)
+            state["flags"] = {"k": "add", "l": left, "r": right,
+                              "res": "(%s + %s)" % (_num(left), _num(right)), "bits": _op_bits(ops, arch)}
+            defined = True
+            continue
+        if mnem == "tst" and len(ops) >= 2:
+            left = _rval(state, ops[0], strings)
+            right = _rval(state, ops[1], strings)
+            state["flags"] = {"k": "test", "l": "(%s & %s)" % (left, right), "r": "0",
+                              "bits": _op_bits(ops, arch)}
+            defined = True
+            continue
         if mnem in {"add", "sub"} and ops and ops[0]["k"] == "reg" and ops[0]["r"] in {"rsp", "esp", "sp"}:
             imm = next((op["n"] for op in ops if op["k"] == "imm"), None)
             if imm is not None:
                 state["sp"] = state.get("sp", 0) + (imm if mnem == "add" else -imm)
             continue
-        if mnem in {"add", "sub"} and ops and ops[0]["k"] == "reg":
-            op = "+" if mnem == "add" else "-"
+        if mnem in {"add", "sub", "adds", "subs"} and ops and ops[0]["k"] == "reg":
+            op = "+" if mnem in {"add", "adds"} else "-"
             right = _rval(state, ops[-1], strings)
             left = _rval(state, ops[-2], strings) if len(ops) >= 3 else _get(state, ops[0]["r"])
             result = "(%s %s %s)" % (_num(left), op, _num(right))
             _set(state, ops[0]["r"], result)
-            state["flags"] = {"k": mnem, "l": left, "r": right, "res": result, "bits": _op_bits(ops, arch)}
-            defined = True
+            # arm64 add/sub leave flags alone. adds/subs and every x86 add/sub set them.
+            if arch != "arm64" or mnem in {"adds", "subs"}:
+                kind = "add" if mnem in {"add", "adds"} else "sub"
+                state["flags"] = {"k": kind, "l": left, "r": right, "res": result, "bits": _op_bits(ops, arch)}
+                defined = True
             continue
         if mnem in {"add", "sub"} and ops and ops[0]["k"] == "mem":
             key = _slot(state, ops[0])
@@ -341,14 +364,25 @@ def _exec(block, state, arch, convention, names, strings, memory):
             state["flags"] = {"k": "xor", "l": "0", "r": "0", "res": "0", "bits": _op_bits(ops, arch)}
             defined = True
             continue
+        if mnem == "ands" and ops and ops[0]["k"] == "reg" and len(ops) >= 2:
+            right = _rval(state, ops[-1], strings)
+            left = _rval(state, ops[-2], strings) if len(ops) >= 3 else _get(state, ops[0]["r"])
+            result = "(%s & %s)" % (left, right)
+            _set(state, ops[0]["r"], result)
+            state["flags"] = {"k": "and", "l": left, "r": right, "res": result, "bits": _op_bits(ops, arch)}
+            defined = True
+            continue
         if mnem in {"and", "or", "xor"} and ops and ops[0]["k"] == "reg" and len(ops) >= 2:
             sym = {"and": "&", "or": "|", "xor": "^"}[mnem]
-            left = _get(state, ops[0]["r"])
-            right = _rval(state, ops[1], strings)
+            # Three-operand arm64 reads sources before the destination is written.
+            right = _rval(state, ops[-1], strings)
+            left = _rval(state, ops[-2], strings) if len(ops) >= 3 else _get(state, ops[0]["r"])
             result = "(%s %s %s)" % (left, sym, right)
             _set(state, ops[0]["r"], result)
-            state["flags"] = {"k": mnem, "l": left, "r": right, "res": result, "bits": _op_bits(ops, arch)}
-            defined = True
+            # arm64 and leaves NZCV alone. Recording flags here hid the compare above it.
+            if arch != "arm64":
+                state["flags"] = {"k": mnem, "l": left, "r": right, "res": result, "bits": _op_bits(ops, arch)}
+                defined = True
             continue
         if mnem == "bt" and len(ops) >= 2:
             state["flags"] = {"k": "bt", "l": _rval(state, ops[0], strings), "r": _rval(state, ops[1], strings),
@@ -374,8 +408,10 @@ def _exec(block, state, arch, convention, names, strings, memory):
                 right = _rval(state, ops[0], strings)
                 left = _get(state, "rax" if arch == "x86-64" else "x0")
                 result = "(%s * %s)" % (_num(left), _num(right))
-            state["flags"] = {"k": mnem, "l": left, "r": right, "res": result, "bits": _op_bits(ops, arch)}
-            defined = True
+            # arm64 mul does not set NZCV. Recording it hid the compare that did.
+            if arch != "arm64":
+                state["flags"] = {"k": mnem, "l": left, "r": right, "res": result, "bits": _op_bits(ops, arch)}
+                defined = True
             continue
         if mnem.startswith("ldr") and ops and ops[0]["k"] == "reg":
             mem = next((op for op in ops[1:] if op["k"] == "mem"), None)
@@ -571,6 +607,9 @@ def _cond(state, item):
         return "%s == 0" % _get(state, item["ops"][0]["r"])
     if mnem == "cbnz" and item["ops"] and item["ops"][0]["k"] == "reg":
         return "%s != 0" % _get(state, item["ops"][0]["r"])
+    if mnem in {"tbz", "tbnz"} and len(item["ops"]) >= 2 and item["ops"][0]["k"] == "reg" and item["ops"][1]["k"] == "imm":
+        bit = "((%s >> %s) & 1)" % (_get(state, item["ops"][0]["r"]), _num(item["ops"][1].get("n")))
+        return "%s %s 0" % (bit, "==" if mnem == "tbz" else "!=")
     flags = state.get("flags")
     if not isinstance(flags, dict):
         return None
@@ -597,6 +636,19 @@ def _cond(state, item):
     if mnem in {"je", "jz", "jne", "jnz", "b.eq", "b.ne"} and flags.get("res"):
         op = "==" if mnem in {"je", "jz", "b.eq"} else "!="
         return "%s %s 0" % (_num(flags["res"]), op)
+    if kind == "add" and flags.get("res") and mnem in {"jl", "jge", "js", "jns", "b.lt", "b.ge", "b.mi", "b.pl"}:
+        op = "<" if mnem in {"jl", "js", "b.lt", "b.mi"} else ">="
+        return "%s %s 0" % (_num(flags["res"]), op)
+    if kind == "add" and flags.get("res") and mnem in {"b.gt", "b.le"}:
+        op = ">" if mnem == "b.gt" else "<="
+        return "%s %s 0" % (_num(flags["res"]), op)
+    if kind == "add" and mnem in {"b.lo", "b.hs", "b.hi", "b.ls"}:
+        # Carry out of an add is an unsigned comparison with 2^width.
+        bits = int(flags.get("bits") or 64)
+        limit = str(1 << bits)
+        expr = _num(flags.get("res")) if flags.get("res") else "(%s + %s)" % (_num(flags.get("l")), _num(flags.get("r")))
+        op = {"b.lo": "<", "b.hs": ">=", "b.hi": ">", "b.ls": "<="}[mnem]
+        return "%s %s %s" % (expr, op, limit)
     return None
 
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.11.0
+The owned decompiler follows more joins, prints real flag conditions, and drops dead stores. Ghidra remains an optional backend. Global parity stays unknown.
+- A multi-entry post-dominator is the follow of an `if` when that `if` does not dominate it. A small already-emitted return tail with no unnamed tokens is duplicated. An irreducible loop extends to the nodes that can return to its header, up to 400. A standalone `goto` whose target is the next emitted block is dropped.
+- `jo` / `jno` and `b.vs` / `b.vc` print a signed overflow test. `bt` plus a carry branch prints a bit test. `subs`, `adds`, `cmn`, `tst`, `ands`, `comiss`, and `fcomi` record flags. Plain arm64 `add` / `and` / `mul` do not, so they no longer hide the compare above them. Carry out of an add is an unsigned comparison with `2^width`. `tbz` / `tbnz` test one bit. Flags copy through a block that does not set them when every predecessor agrees. A cleared overflow flag prints `0 == 0` or `0 != 0`.
+- An unread assignment whose right-hand side has no call is removed. A pure unread call stays as a call. A byte inside a known string is quoted as that suffix.
+- Arm64 gaps outside `.plt`, `.init`, and `.fini` contribute a function at `stp x29, x30`, `paciasp` / `pacibsp`, a stack `str x30`, or `sub sp, sp` after `ret` / `nop` / `udf`. Unconditional tail jumps are discovery targets. The new-function cap is 4,000.
+- On `/bin/ls`, native gotos are 859 across 189 functions (4.54 per function; stock Ghidra is 1.77) and 53 in `main` (stock is 43). Unnamed tokens are 1,052, under the 1,061 of 0.9.0. `if (1)` is gone from `/bin/ls`. Address literals stay at 1. Mean token similarity against injected Ghidra is 0.193 on 188 functions.
+- On ripgrep 14.1.1 ELF arm64, discovery disassembles 7,156 functions. 7,135 have text, 1.72 gotos each, against stock Ghidra's 2.46 on 7,386 functions, in about 82 seconds. Stock Ghidra still lists 7,388 internal functions. Mean token similarity is 0.197 on 7,057 overlapping functions. `if (1)` remains on 43 arm64 branches whose flags never arrive.
+- Readability tables are in `docs/DECOMPILER.md`.
+
 ## 0.10.0
 The owned decompiler structures regions instead of emitting a goto for every join. Ghidra remains an optional backend. Global parity stays unknown.
 - `rea_bot/native/struct.py` walks the dominator tree. Post-dominators place the follow of an `if`. Natural loops become `while`, `do-while`, or `for`, with `break` and `continue`. Condition chains become `&&` and `||`. Jump tables stay `switch`. A multi-entry join that is not the follow, and an irreducible cross edge, stay `goto`.

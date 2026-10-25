@@ -1,6 +1,6 @@
 # Native engine benchmark
 
-0.7.0, one run of `python3 scripts/benchmark_native.py` on this machine. The 0.10.0 readability comparison (every decompiled function, not this sample) is in `docs/DECOMPILER.md`. Lostwax with Ghidra and REA with Ghidra both used pinned Ghidra 12.1.4. The native column did not. A follow-up static decompile, same Lostwax driver, read the prototype line of the sampled functions. The raw JSON is `docs/benchmark-last.json` and is not committed.
+0.7.0, one run of `python3 scripts/benchmark_native.py` on this machine. The 0.11.0 readability comparison (every decompiled function, not this sample) is in `docs/DECOMPILER.md`. Lostwax with Ghidra and REA with Ghidra both used pinned Ghidra 12.1.4. The native column did not. A follow-up static decompile, same Lostwax driver, read the prototype line of the sampled functions. The raw JSON is `docs/benchmark-last.json` and is not committed.
 
 Lostwax used the pinned opt-in wheels (capstone 5.0.9, LIEF 1.0.0, wasmtime 50.0.1, dnfile 0.18.0, pyelftools 0.33, olefile 0.47). REA is rea-agents 6.5.0. The optional backends were already on disk. The script does not download them.
 

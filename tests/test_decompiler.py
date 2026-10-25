@@ -225,3 +225,33 @@ class Arm64Call(unittest.TestCase):
             rendered = "\n".join(decompile_function(md, insns, "arm64") or [])
             self.assertIn("return call_1;", rendered)
             self.assertNotIn("goto 0x", rendered)
+
+    def test_flag_setting_ops_are_conditions(self):
+        source = (
+            "int bits(int a, int b) {\n"
+            "  if ((a & b) == 0) return 1;\n"
+            "  if (a + b == 0) return 2;\n"
+            "  if (a - b < 0) return 3;\n"
+            "  return 0;\n"
+            "}\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "bits.c"
+            src.write_text(source)
+            dest = Path(tmp) / "bits.o"
+            compiled = subprocess.run(
+                ["clang", "-target", "aarch64-linux-gnu", "-c", "-O0", "-fno-pic", "-ffreestanding",
+                 "-fno-asynchronous-unwind-tables", "-o", str(dest), str(src)],
+                capture_output=True, text=True)
+            if compiled.returncode != 0:
+                self.skipTest(compiled.stderr[-200:])
+            binary = lief.parse(str(dest))
+            text = next(section for section in binary.sections if str(section.name) == ".text")
+            md = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
+            md.detail = True
+            insns = list(md.disasm(bytes(text.content), int(text.virtual_address)))
+            rendered = "\n".join(decompile_function(md, insns, "arm64") or [])
+            self.assertIn("(arg0 & arg1)", rendered)
+            self.assertIn("(arg0 + arg1)", rendered)
+            self.assertIn("(arg0 - arg1)", rendered)
+            self.assertNotIn("if (1)", rendered)
