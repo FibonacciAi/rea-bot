@@ -42,7 +42,88 @@ def structure_function(entry, by, succs, dom, ipdom, loops):
         # run for a function the region walk already finished.
         builder = _Structurer(entry, by, succs, dom, ipdom, loops)
         builder.emit_flat_cfg()
-    return builder.render()
+    lines = builder.render()
+    # A second entry is still a goto after the region walk. The condition
+    # structurer emits that block once, under the condition that reaches it.
+    # Keep it only when it removes a goto without reprinting a call or growing
+    # the text past the bound below.
+    if _goto_count(lines) == 0:
+        return lines
+    try:
+        from .reaching import structure_reaching
+        alt = structure_reaching(entry, by, succs)
+    except Exception:
+        alt = None
+    if _prefer_reaching(alt, lines, by):
+        return alt
+    return lines
+
+
+def _goto_count(lines):
+    return sum(len(re.findall(r"\bgoto\b", line)) for line in lines or [])
+
+
+def _prefer_reaching(alt, lines, by):
+    """True when the condition text has fewer gotos and stays within bounds."""
+    if not alt:
+        return False
+    if _goto_count(alt) >= _goto_count(lines):
+        return False
+    growth = len(alt) - len(lines)
+    if growth > max(80, len(lines) // 2):
+        return False
+    if any(len(line) > 4000 for line in alt):
+        return False
+    if not _balanced(alt):
+        return False
+    budget = {}
+    for block in by.values():
+        for stmt in block.get("stmts") or []:
+            raw = simplify_line(str(stmt)).strip()
+            if not _call_stmt(raw):
+                continue
+            budget[raw] = budget.get(raw, 0) + 1
+    seen = {}
+    for line in alt:
+        raw = line.strip()
+        if not _call_stmt(raw):
+            continue
+        seen[raw] = seen.get(raw, 0) + 1
+        if seen[raw] > budget.get(raw, 0):
+            return False
+    return True
+
+
+def _balanced(lines):
+    """False when an else is detached or the braces do not match."""
+    depth = 0
+    prev = ""
+    for line in lines:
+        raw = line.strip()
+        raw = re.sub(r"'(\\.|[^'])'", " ", raw)
+        raw = re.sub(r'"(\\.|[^"])*"', " ", raw)
+        if raw.startswith("else"):
+            attached = (
+                prev == "}" or prev.endswith("}")
+                or prev.startswith("if ") or prev.startswith("if(")
+                or prev.startswith("else if ") or prev.startswith("else if(")
+            )
+            if not attached:
+                return False
+        if raw:
+            prev = raw
+        depth += raw.count("{") - raw.count("}")
+        if depth < 0:
+            return False
+    return depth == 0
+
+
+def _call_stmt(raw):
+    head = (raw or "").lstrip()
+    if not head or head.startswith((
+            "if ", "if(", "else ", "while ", "for ", "switch ", "p_", "enter_", "leave_")):
+        return False
+    return bool(re.search(r"[A-Za-z_][A-Za-z0-9_]*\s*\(", head))
 
 
 def structure_cfg(blocks):
@@ -1033,6 +1114,11 @@ class _Structurer(object):
         found = self._leads_to_ret(target, 0)
         if found is None:
             return None
+        # The shared return names a phi. Copying one predecessor's value
+        # here would print a second return beside that phi.
+        for stmt in (self.by.get(found) or {}).get("stmts") or []:
+            if re.search(r"\breturn v_[0-9A-Fa-f]+_", str(stmt)):
+                return None
         if target != found:
             expr = self._expr_if_set(self.by.get(target))
             if expr is not None:
@@ -1679,6 +1765,18 @@ def _collapse_empty(by, succs, entry):
         new_succs[node] = redirected
     if entry in remove:
         entry = mapping.get(entry, entry)
+    for block in new_by.values():
+        switch = block.get("switch") or None
+        cases = (switch or {}).get("cases") or []
+        if not cases:
+            continue
+        rewritten = []
+        for index, target in cases:
+            target = mapping.get(target, target)
+            if target in new_by:
+                rewritten.append((index, target))
+        if rewritten != cases:
+            block["switch"] = dict(switch, cases=rewritten)
     return new_by, new_succs, entry
 
 
