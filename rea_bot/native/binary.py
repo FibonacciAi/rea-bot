@@ -4,7 +4,8 @@ Disassembly and control flow are native (Capstone) for x86-64, x86-32, arm64 and
 Function bounds come from .eh_frame, the PE exception directory, Mach-O function starts,
 symbols, and direct call targets. Import stubs are named for ELF, PE and Mach-O.
 DWARF parameter names are written into the lifted body. PDB records are read when present.
-On x86-64 and arm64, a function with no calls may be structured by the milestone 1 decompiler.
+On x86-64 and arm64 the owned decompiler structures calls, if/while/switch and named callees.
+Leaf functions of at most 80 instructions still use the milestone 1 structurer.
 Nothing is executed.
 """
 import struct
@@ -12,6 +13,7 @@ import time
 
 from . import dwarf, ehframe, lift, pdb
 from .decompile import decompile_function
+from .prototypes import convention_for, usage_signature
 from .runtime import activate
 
 _CFG_ARCH = {"x86-64", "arm64", "x86", "arm"}
@@ -430,7 +432,7 @@ def _strings(sections):
                 j = i
                 while j < len(raw) and 32 <= raw[j] < 127:
                     j += 1
-                if 4 <= j - i <= 240 and j < len(raw) and raw[j] == 0:
+                if 2 <= j - i <= 240 and j < len(raw) and raw[j] == 0:
                     found.append((sec["va"] + i, raw[i:j].decode("ascii")))
                     i = j + 1
                     continue
@@ -725,7 +727,7 @@ def _lookup_string(strings, addr):
     return None
 
 
-def _disassemble(md, arch, func, sections, plt, strings, names, budget, lift_left):
+def _disassemble(md, arch, func, sections, plt, strings, names, budget, lift_left, convention):
     raw = _bytes_at(sections, func["address"], func["size"])
     if not raw:
         func.update({"instructions": 0, "blocks": 0, "cfg_edges": 0, "callees": [], "callee_count": 0,
@@ -761,17 +763,27 @@ def _disassemble(md, arch, func, sections, plt, strings, names, budget, lift_lef
             elif addr not in {insn.address, insn.address + insn.size} and not _in_exec(sections, addr):
                 constant_xrefs.append({"from": _hex(insn.address), "address": _hex(addr)})
     sig = _signature(md, insns, arch)
+    sig = usage_signature([item.get("name") or "" for item in callees], sig)
+    if sig.get("source") == "usage" and not func.get("name"):
+        func["name"] = "main"
     asm = ["%s: %s %s" % (_hex(insn.address), insn.mnemonic, insn.op_str) for insn in insns[:12]]
     pseudo = []
-    if lift_left[0] > 0 and insns:
+    if insns and (lift_left is None or lift_left[0] > 0):
         structured = None
         if arch in {"x86-64", "arm64"}:
             try:
-                structured = decompile_function(md, insns, arch)
+                label_at = dict(plt)
+                for addr, name in names.items():
+                    if name:
+                        label_at.setdefault(addr, name)
+                string_at = {addr: text for addr, text in strings}
+                structured = decompile_function(
+                    md, insns, arch, names=label_at, strings=string_at, convention=convention,
+                    memory=lambda addr, n: _bytes_at(sections, addr, n))
             except Exception:
                 structured = None
         pseudo = structured if structured else lift.lift(md, insns, arch)
-        if pseudo:
+        if pseudo and lift_left is not None:
             lift_left[0] -= 1
     func.update({"instructions": len(insns), "blocks": flow["blocks"], "cfg_edges": flow["edges"],
                  "callees": callees[:16], "callee_count": len(callees),
@@ -912,7 +924,9 @@ def _one(binary, path=None):
             plt = {}
             limitations.append("Import names were not recovered: " + str(err)[:180])
     budget = [0]
-    lift_left = [50]
+    lift_left = None
+    convention = convention_for(arch, binary.format)
+    decompile_started = time.perf_counter()
     call_edges = 0
     import_edges = 0
     indirect = 0
@@ -928,7 +942,7 @@ def _one(binary, path=None):
             if budget[0] >= MAX_INSNS:
                 limitations.append("Instruction budget reached; later functions were not disassembled.")
                 break
-            _disassemble(md, arch, func, sections, plt, strings, names, budget, lift_left)
+            _disassemble(md, arch, func, sections, plt, strings, names, budget, lift_left, convention)
             disasm_funcs += 1
             blocks += func["blocks"]
             cfg_edges += func["cfg_edges"]
@@ -960,7 +974,7 @@ def _one(binary, path=None):
             if any(f["address"] <= addr < f["address"] + f["size"] for f in kept):
                 continue
             func = {"address": addr, "size": 256, "origin": "call-target", "name": names.get(addr, ""), "size_approximate": True}
-            _disassemble(md, arch, func, sections, plt, strings, names, budget, lift_left)
+            _disassemble(md, arch, func, sections, plt, strings, names, budget, lift_left, convention)
             kept.append(func)
             known.add(addr)
             disasm_funcs += 1
@@ -1021,9 +1035,10 @@ def _one(binary, path=None):
         public.append(item)
     named = sum(1 for f in public if not f["name"].startswith("sub_"))
     lifted = [item for item in public if item.get("pseudocode")]
-    branched = [item for item in lifted if any(line.startswith("if (") for line in item["pseudocode"])]
-    control = [item for item in lifted if any(line.startswith("if (") or line.startswith("goto ") for line in item["pseudocode"])]
-    sample = (branched or control or lifted or [None])[0]
+    branched = [item for item in lifted if any(line.startswith("if (") or line.startswith("while (") or line.startswith("switch (") for line in item["pseudocode"])]
+    control = [item for item in lifted if any(line.startswith(("if (", "while (", "switch (", "goto ")) for line in item["pseudocode"])]
+    called = [item for item in lifted if any("getopt" in (c.get("name") or "") for c in item.get("callees") or [])]
+    sample = (called or branched or control or lifted or [None])[0]
     return {"kind": "native-binary", "format": str(binary.format).split(".")[-1], "arch": arch,
             "imagebase": _hex(_imagebase(binary)), "entrypoint": _hex(entry) if entry else None, "entry_assembly": entry_asm,
             "sections": [{"name": s["name"], "va": _hex(s["va"]), "size": s["size"], "executable": s["executable"]} for s in sections],
@@ -1037,12 +1052,13 @@ def _one(binary, path=None):
             "xrefs": {"strings": string_xrefs, "constants": constant_xrefs},
             "decompiler": {"lifted": len(lifted), "with_control_flow": len(control),
                            "sample_name": sample["name"] if sample else "",
-                           "sample": sample["pseudocode"] if sample else []},
+                           "sample": sample["pseudocode"] if sample else [],
+                           "seconds": round(time.perf_counter() - decompile_started, 4)},
             "dwarf": dwarf_report, "codeview": codeview, "pdb": pdb_report,
             "instructions": budget[0],
             "functions_detail": public,
             "limitations": limitations + [
-                "C-like pseudocode is a structural lift of registers, stack slots and branches. DWARF parameter names are substituted into that lift when they are known. It is not a decompiler of Ghidra's depth.",
+                "Pseudocode is the owned decompiler on x86-64 and arm64: calls, if/while/switch, and names from DWARF or import prototypes. Other architectures stay on the structural lift.",
                 "Register signatures are inferred unless DWARF names them. x86-32 cdecl arguments stay on the stack.",
                 "The file was not executed.",
             ]}

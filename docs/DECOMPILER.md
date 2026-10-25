@@ -31,30 +31,50 @@ On `int add(int left, int right) { return left + right; }` compiled with gcc `-O
 
 `if (cond) return a; else return b` becomes `if (cond == 0) { return b; } else { return a; }` on both architectures. `while (n > 0) n = n - 1` becomes `while (n > 0) { n = (n - 1); } return n;`.
 
-## Milestone 2
+Milestone 1 is unchanged for a leaf: one `if` or one `while`, no calls, at most 80 instructions. Anything else on x86-64 and arm64 goes through `rea_bot/native/body.py`. x86-32 and arm32 stay on the structural lift.
 
-Type lattice and richer control flow.
+## What landed after milestone 1
 
-- Widths: `int` versus `long`, signed versus unsigned, and pointer-sized values from the instruction (`mov` versus `movzx`, `w` versus `x`).
-- A small lattice (undefined, integer, pointer, conflict) stored on each SSA value.
-- `switch` from a jump table or a chain of comparisons, bounded to one region.
-- `if / else if` chains, not only one diamond.
-- Keep Ghidra as the oracle. The gate is `return_score` and `score` on the add, pick, and dec fixtures plus one jump-table fixture.
+- Calls use SysV (`rdi`…`r9`), Win64 (`rcx`…`r9`) or AAPCS64 (`x0`…`x7`). A known callee is rendered with its catalog arity. An unknown callee uses the argument registers that were written. The return register is kept when a later instruction, including `ret`, reads it.
+- Callees are named from the ELF, PE and Mach-O import map already recovered by the native engine. A caller of `getopt`, `getopt_long` or `getopt_long_only` is reported as `int main(int argc, char **argv)` unless DWARF already named it.
+- Jump tables become `switch`. A preceding `ja` bounds the table. `goto` is emitted when a block was already structured or the region does not reduce.
+- String literals that resolve are quoted in the call. Other large addresses are `data_%x`, which the unnamed-token metric counts.
+- Every disassembled function is decompiled. `/bin/ls` (189 functions, including the 1,647-instruction caller) takes about 1.2 seconds. ripgrep 14.1.1 ELF arm64 decompiles the 4,011 functions inside the 4,000-function discovery cap in about 19.5 seconds. The cap is unchanged, so that binary's Ghidra function list is larger. Ghidra's decompiler runs as one headless session.
+- Headless Ghidra decompiles every internal function. Before that, a DWARF signature or the recovered `main(int argc, char **argv)` is applied with `setName` and `replaceParameters` when the listing's parameter count does not already match. On the measured `/bin/ls`, applying the import catalog as well made other functions noisier, so the analyze path does not do that.
 
-## Milestone 3
+`readability` counts non-empty lines, `goto`, address literals (`0x…`), and unnamed tokens (`param_N`, `argN`, `FUN_`, `sub_`, `local_`, `mem_`, `data_`, `undefined`, `DAT_`). Lower is better. Lines describe the size of the text. `call_N` and a bare `mem` are not in that unnamed pattern.
 
-Calling convention and stack variables past the first spill.
+## `/bin/ls` against stock Ghidra 12.1.4
 
-- x86-32 and arm32, including arguments that live only on the stack.
-- Overlapping slots and a variable whose stack home changes.
-- Structure fields recovered from a base pointer plus a constant offset, when DWARF or a PDB already named the base.
-- Calls: argument setup and the returned register, still without executing the callee.
+Stock Ghidra is the stand-in for REA on this decompiler. Both Lostwax's headless pass and the stock pass decompiled all 412 internal functions. Lostwax+Ghidra below is the pass that renames the `getopt_long` caller and its two parameters, and nothing else. Totals are the sum over every decompiled function. The matched rows are the 188 native functions that also appear in the Ghidra list.
 
-## Milestone 4
+| Pass | Functions | Lines | Gotos | Unnamed | Addresses | Seconds |
+| --- | --- | --- | --- | --- | --- | --- |
+| Lostwax native | 189 | 10146 | 1944 | 1061 | 1 | 1.2 |
+| Lostwax+Ghidra | 412 | 14686 | 728 | 5682 | 2374 | 17 |
+| Stock Ghidra | 412 | 14684 | 728 | 5694 | 2374 | 14 |
 
-Scale the metric to the benchmark set.
+The caller of `getopt_long` (native `main` at `0x4da0`, stock `FUN_00104da0`):
 
-- Run milestone 2–3 on the functions Ghidra decompiles for `/bin/ls`, the freestanding `add` samples, and one function from each ripgrep build.
-- Publish a table of per-function `score` and `return_score` next to the Ghidra text length.
-- A function that still returns None stays on the structural lift and counts as uncovered, not as a match.
-- No claim of beating Ghidra on `/bin/ls` until that table says so. Typed locals, `switch`, and the full body of a command-line parser are the gap milestone 1 does not touch.
+| Pass | Signature | Lines | Gotos | Unnamed | Addresses |
+| --- | --- | --- | --- | --- | --- |
+| Lostwax native | `int main(int argc, char **argv)` | 1102 | 168 | 157 | 0 |
+| Lostwax+Ghidra | `int main(int argc, char * * argv)` | 1019 | 43 | 511 | 171 |
+| Stock Ghidra | `undefined FUN_00104da0()` | 1017 | 43 | 522 | 171 |
+
+Lostwax+Ghidra ties stock on gotos and address literals and is lower on unnamed tokens, because `param_1` is gone from that function and the signature names `argc` and `argv`. The body still has Ghidra's `local_` / `DAT_` / `undefined` tokens. Native is lower on unnamed tokens and address literals and higher on gotos: the `switch` is present and the call is `getopt_long(argc, argv, "…", …)`, and 168 gotos remain. Mean whole-text similarity of the native text to injected Ghidra on the 188 matched functions is 0.188. That is not a typing win.
+
+## ripgrep 14.1.1 ELF arm64
+
+Native, inside the discovery cap: 4,011 functions with text, 139,105 lines, 24,893 gotos, 32,989 unnamed, 90 address literals, 19.5 seconds. The release build's `main` is a short stub. A full Ghidra decompile of this binary is recorded when `scripts/benchmark_decompiler.py` has been run on it. Until that table exists, this row is not a claim of beating Ghidra.
+
+## Still open
+
+- x86-32 and arm32 calls and stack arguments.
+- A type lattice beyond the catalog, DWARF, and the width of a 32-bit move. Overlapping stack slots and structure fields are not recovered.
+- Nested control flow in large functions still falls through to `goto`. The `/bin/ls` caller has 168.
+- The 4,000-function cap, so ripgrep is not fully decompiled natively.
+- String inventory on `/bin/ls` is 466. The earlier REA count was 492.
+- WAT output is not emitted. Wasm parsing still stores code sizes, not a decoded module.
+- .NET call edges on Newtonsoft.Json 13.0.3 are 13,905 and field accesses are 5,572, against the earlier REA counts of 14,835 and 5,937. The C# lift is still 120 methods. Bodies are cut at 8 KiB and an unknown opcode stops the walk.
+- Decompiled C is observed-static. Global parity stays unknown.

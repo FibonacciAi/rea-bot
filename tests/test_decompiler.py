@@ -129,3 +129,83 @@ class GhidraOracle(unittest.TestCase):
             self.assertGreaterEqual(score["score"], 0.35)
             self.assertGreaterEqual(score["return_score"], 0.8)
             self.assertIn("left", ghidra)
+
+
+@unittest.skipUnless(shutil.which("gcc"), "gcc is not installed")
+class CallsAndSwitch(unittest.TestCase):
+    def test_getopt_loop_names_argc_and_argv(self):
+        source = (
+            "#include <getopt.h>\n"
+            "int main(int argc, char **argv) {\n"
+            "  int c;\n"
+            "  while ((c = getopt_long(argc, argv, \"ab\", 0, 0)) != -1) {\n"
+            "    if (c == 'a') return 1;\n"
+            "    if (c == 'b') return 2;\n"
+            "  }\n"
+            "  return 0;\n"
+            "}\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "main.c"
+            src.write_text(source)
+            binary = Path(tmp) / "main"
+            compiled = subprocess.run(["gcc", "-O0", "-fno-inline", "-no-pie", "-o", str(binary), str(src)],
+                                      capture_output=True, text=True)
+            if compiled.returncode != 0:
+                self.skipTest(compiled.stderr[-200:])
+            from rea_bot.native.binary import analyze_binary
+            report = analyze_binary(binary)
+            main = next(func for func in report["functions_detail"] if func["name"] == "main")
+            text = "\n".join(main["pseudocode"])
+            self.assertIn('getopt_long(argc, argv, "ab", 0, 0)', text)
+            self.assertNotIn("goto", text)
+            self.assertIn("while (1)", text)
+            self.assertIn("== (-1)", text)
+
+    def test_jump_table_is_a_switch(self):
+        cases = "\n".join("case %d: return %d;" % (index, index + 10) for index in range(16))
+        source = "int sw(int x) { switch (x) { %s default: return -1; } }\nint main(){return sw(1);}\n" % cases
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "sw.c"
+            src.write_text(source)
+            binary = Path(tmp) / "sw"
+            compiled = subprocess.run(
+                ["gcc", "-O1", "-fno-pie", "-no-pie", "-fno-inline", "-o", str(binary), str(src)],
+                capture_output=True, text=True)
+            if compiled.returncode != 0:
+                self.skipTest(compiled.stderr[-200:])
+            from rea_bot.native.binary import analyze_binary
+            report = analyze_binary(binary)
+            sw = next(func for func in report["functions_detail"] if func["name"] == "sw")
+            text = "\n".join(sw["pseudocode"])
+            self.assertIn("switch (arg0)", text)
+            self.assertIn("return 10;", text)
+            self.assertIn("return 25;", text)
+            self.assertIn("return (-1);", text)
+            self.assertNotIn("goto", text)
+
+
+@unittest.skipUnless(shutil.which("clang"), "clang is not installed")
+class Arm64Call(unittest.TestCase):
+    def test_memory_operands_and_call_result(self):
+        source = "int add(int a, int b){return a + b;}\nint use(int a){return add(a, 1);}\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "call.c"
+            src.write_text(source)
+            dest = Path(tmp) / "call.o"
+            compiled = subprocess.run(
+                ["clang", "-target", "aarch64-linux-gnu", "-c", "-O0", "-fno-pic", "-ffreestanding",
+                 "-fno-asynchronous-unwind-tables", "-o", str(dest), str(src)],
+                capture_output=True, text=True)
+            if compiled.returncode != 0:
+                self.skipTest(compiled.stderr[-200:])
+            binary = lief.parse(str(dest))
+            text = next(section for section in binary.sections if str(section.name) == ".text")
+            raw = bytes(text.content)
+            base = int(text.virtual_address)
+            md = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
+            md.detail = True
+            insns = [insn for insn in md.disasm(raw, base) if insn.address >= 32]
+            rendered = "\n".join(decompile_function(md, insns, "arm64") or [])
+            self.assertIn("return call_1;", rendered)
+            self.assertNotIn("goto 0x", rendered)

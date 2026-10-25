@@ -34,6 +34,20 @@ _TYPES = {"int", "void", "long", "char", "short", "unsigned", "signed", "undefin
           "undefined2", "undefined4", "undefined8", "bool", "byte", "dword", "qword"}
 
 
+_UNNAMED = re.compile(
+    r"\b(?:param_\d+|arg\d+\??|FUN_[0-9A-Fa-f]+|sub_[0-9A-Fa-f]+|local_[0-9A-Fa-f]+|mem_[0-9A-Fa-f]+|"
+    r"data_[0-9A-Fa-f]+|undefined\d*|DAT_[0-9A-Fa-f]+)\b")
+_ADDR = re.compile(r"\b0x[0-9A-Fa-f]+\b")
+
+
+def readability(text):
+    """Lower is better. Lines are the size of the text, not a score by themselves."""
+    body = text or ""
+    lines = [line for line in body.splitlines() if line.strip()]
+    return {"lines": len(lines), "gotos": len(re.findall(r"\bgoto\b", body)),
+            "unnamed": len(_UNNAMED.findall(body)), "addresses": len(_ADDR.findall(body))}
+
+
 def similarity(ours, reference):
     """Token similarity in 0..1. Types and comments are ignored.
 
@@ -65,7 +79,22 @@ def _tokens(text):
     return [word.lower() for word in words if word.lower() not in _TYPES]
 
 
-def decompile_function(md, insns, arch, parameters=None):
+def decompile_function(md, insns, arch, parameters=None, names=None, strings=None, convention=None, memory=None):
+    """Structured lines. Milestone 1 handles a leaf; the general decompiler handles calls and the rest."""
+    lines = _milestone1(md, insns, arch, parameters)
+    if lines:
+        return lines
+    if arch not in {"x86-64", "arm64"} or not insns:
+        return None
+    from .body import decompile_body
+    try:
+        return decompile_body(md, insns, arch, parameters=parameters, names=names, strings=strings,
+                              convention=convention, memory=memory)
+    except Exception:
+        return None
+
+
+def _milestone1(md, insns, arch, parameters=None):
     """Return structured lines, or None when this milestone cannot structure the function."""
     if arch not in _PTR or not insns or len(insns) > 80:
         return None
@@ -393,6 +422,10 @@ def _negate(cond):
 def _structure(blocks, entry):
     calls = {"call", "bl", "blr", "blx"}
     if any(item["mnem"] in calls for block in blocks for item in block["insns"]):
+        return None
+    # An indirect jump is a jump table. The general decompiler structures that as a switch.
+    if any(item["mnem"].split()[-1] in {"jmp", "br"} and _imm(item["ops"]) is None
+           for block in blocks for item in block["insns"]):
         return None
     by = {block["start"]: block for block in blocks}
     back = []

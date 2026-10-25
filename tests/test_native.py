@@ -190,8 +190,12 @@ class Binaries(TempHome):
         self.assertTrue(any(" " in text for text in report["strings"]["samples"]))
         self.assertTrue(set(report["imports"]) & {"strlen", "malloc", "strncmp", "free", "abort"})
         self.assertTrue(any("not executed" in line for line in report["limitations"]))
-        self.assertGreater(report["decompiler"]["lifted"], 0)
+        self.assertGreater(report["decompiler"]["lifted"], 100)
         self.assertTrue(any(line.startswith("if (") for line in report["decompiler"]["sample"]))
+        main = next(func for func in report["functions_detail"] if func["name"] == "main")
+        main_text = "\n".join(main.get("pseudocode") or [])
+        self.assertTrue("getopt_long(" in main_text and "argc" in main_text and "switch (" in main_text)
+        self.assertEqual(main["signature"]["source"], "usage")
 
     def test_compiled_signature_and_call(self):
         from rea_bot.native.binary import analyze_binary

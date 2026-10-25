@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.0
+The owned decompiler now covers calls and real-size functions. Ghidra remains an optional backend. Global parity stays unknown.
+- x86-64 and arm64 functions are decompiled without the 80-instruction and no-call limits. The decompiler recovers SysV, Win64 and AAPCS64 arguments, names callees from ELF, PE and Mach-O imports, and structures `if` / `else`, `while`, `break` / `continue` and jump-table `switch`. A leaf of at most 80 instructions with no calls still uses the milestone 1 structurer.
+- A caller of `getopt_long` is signed `int main(int argc, char **argv)` from that use. String literals that resolve are inlined. `goto` remains where a region does not reduce.
+- Every disassembled function is decompiled, and the time is reported. The 4,000-function discovery cap is unchanged. Headless Ghidra decompiles every internal function in one session. On stripped `/bin/ls` the session renames that caller to `main(int argc, char **argv)` before decompiling. Applying the whole import catalog on top of Ghidra's own prototypes made other functions noisier, so those prototypes are left as Ghidra recovered them.
+- Readability on the measured set is in `docs/DECOMPILER.md`. The native text beats stock Ghidra on unnamed tokens and address literals for `/bin/ls` and has more `goto`s. It does not match Ghidra's typing. Mean token similarity against Ghidra on the 188 functions both decompiled is 0.188.
+- Whole-assembly .NET call and field counts are reported. The C# lift stays capped at 120 methods.
+
 ## 0.8.0
 Milestone 1 of Lostwax's own decompiler. Ghidra stays an optional oracle and an optional backend.
 - `rea_bot/native/decompile.py` versions registers and stack slots for x86-64 and arm64, copy-propagates spills, and structures one `if` or one `while`. Functions with calls, or more than 80 instructions, stay on the structural lift.

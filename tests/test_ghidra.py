@@ -79,6 +79,25 @@ class GhidraContract(unittest.TestCase):
         self.assertIn("left", text)
         self.assertNotIn("sub_10", text)
 
+    def test_usage_signature_and_externs_reach_the_config(self):
+        report = {"imagebase": "0x0", "functions_detail": [{
+            "name": "main", "address": "0x4da0",
+            "signature": {"source": "usage", "args": ["int argc", "char **argv"], "returns": "int"},
+            "callees": [],
+        }], "imports": ["getopt_long", "printf"]}
+        base, names, signatures, hints = ghidra_backend.hints_from(report)
+        self.assertEqual(base, 0)
+        self.assertEqual(names[0x4da0], "main")
+        self.assertEqual(signatures[0x4da0]["args"], ["int argc", "char **argv"])
+        self.assertIn(0x4da0, hints)
+        externs = ghidra_backend.externs_from(report)
+        text = ghidra_backend._config(Path("/tmp/lostwax-ghidra-config.txt"), 0, names, signatures, hints, 0, 12, externs)
+        self.assertIn("limit\t0", text)
+        self.assertIn("param\t4da0\t0\tint\targc", text)
+        self.assertIn("param\t4da0\t1\tchar **\targv", text)
+        self.assertIn("extern\tgetopt_long\tint\tint|argc", text)
+        self.assertIn("ret\t4da0\tint", text)
+
     def test_sample_signature_skips_the_blank_line(self):
         report = {"functions_detail": [{"address": "0x1000"}]}
         code = "\nint add(int left, int right)\n\n{\n  return right + left;\n}\n"
@@ -144,3 +163,25 @@ class GhidraDecompile(unittest.TestCase):
             from rea_bot.native.analyze import _evidence
             rows = _evidence(Path(tmp) / "summary.json", [native])
             self.assertIn("native:decompiler", [row["id"] for row in rows])
+
+    def test_stripped_ls_main_uses_argc(self):
+        from rea_bot.native.binary import analyze_binary
+        native = analyze_binary("/bin/ls")
+        main = next(func for func in native["functions_detail"] if func["name"] == "main")
+        ours = "\n".join(main.get("pseudocode") or [])
+        self.assertTrue("getopt_long(" in ours and "argc" in ours and "switch (" in ours)
+        base, names, signatures, hints = ghidra_backend.hints_from(native)
+        addr = int(main["address"], 16)
+        self.assertIn(addr, signatures)
+        result = ghidra_backend.decompile(
+            "/bin/ls", source_base=base, names=names, signatures=signatures, hints=[addr],
+            externs=ghidra_backend.externs_from(native), analysis_timeout=240, decomp_timeout=45, limit=4)
+        ghidra_backend.merge(native, result, source_base=base)
+        hit = next(item for item in native["ghidra_decompiled"] if "getopt_long" in (item.get("c") or ""))
+        code = hit.get("c") or ""
+        signature = hit.get("signature") or ""
+        self.assertIn("argc", code)
+        self.assertIn("argv", code)
+        self.assertIn("getopt_long", code)
+        self.assertNotIn("param_1", signature)
+        self.assertGreater(result.get("params_applied") or 0, 0)
