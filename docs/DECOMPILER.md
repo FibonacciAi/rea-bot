@@ -66,7 +66,15 @@ Lostwax+Ghidra ties stock on gotos and address literals and is lower on unnamed 
 
 ## ripgrep 14.1.1 ELF arm64
 
-Native, inside the discovery cap: 4,011 functions with text, 139,105 lines, 24,893 gotos, 32,989 unnamed, 90 address literals, 19.5 seconds. The release build's `main` is a short stub. A full Ghidra decompile of this binary is recorded when `scripts/benchmark_decompiler.py` has been run on it. Until that table exists, this row is not a claim of beating Ghidra.
+One run of `scripts/benchmark_decompiler.py`. Native is every function inside the 4,000-function discovery cap (4,014 discovered, 4,011 with text). Ghidra decompiled 7,388 internal functions, 7,386 with text. Lostwax+Ghidra applied nothing on this file: there is no DWARF and no `getopt_long` caller, so `names_applied` and `params_applied` are 0 and the two Ghidra columns match. Mean token similarity on the 4,006 native functions that also appear in Ghidra is 0.175.
+
+| Pass | Functions | Lines | Gotos | Unnamed | Addresses | Seconds |
+| --- | --- | --- | --- | --- | --- | --- |
+| Lostwax native | 4011 | 139105 | 24893 | 32989 | 90 | 19.5 |
+| Lostwax+Ghidra | 7386 | 646467 | 18150 | 331934 | 167382 | 299 |
+| Stock Ghidra | 7386 | 646467 | 18150 | 331934 | 167382 | 300 |
+
+Per function with text, native is 6.2 gotos, 8.2 unnamed, 0.02 address literals, 35 lines. Ghidra is 2.5 gotos, 44.9 unnamed, 22.7 address literals, 88 lines. Those averages are not the same set: native stops at the discovery cap. Native is lower on unnamed tokens and address literals and higher on gotos. Lostwax+Ghidra does not beat stock here. The release `main` is a short stub, so there is no command-line parser to rename.
 
 ## Still open
 
