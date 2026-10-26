@@ -185,10 +185,13 @@ class Binaries(TempHome):
         report = analyze_binary("/bin/ls")
         self.assertEqual(report["arch"], "x86-64")
         self.assertGreaterEqual(report["functions"]["count"], 400)
-        plt = [func for func in report["functions_detail"] if func.get("origin") == "plt"]
-        self.assertGreaterEqual(len(plt), 100)
-        clean = [func for func in plt if func.get("name")
-                 and "goto " not in "\n".join(func.get("pseudocode") or [])]
+        # A classic lazy PLT is labeled "import" on some builds and "plt" on
+        # others. Either label is a stub. The body still has to be a named
+        # call, not a goto.
+        stubs = [func for func in report["functions_detail"]
+                 if func.get("origin") in {"plt", "import"} and func.get("name")]
+        self.assertGreaterEqual(len(stubs), 100)
+        clean = [func for func in stubs if "goto " not in "\n".join(func.get("pseudocode") or [])]
         self.assertGreaterEqual(len(clean), 100)
         self.assertGreater(report["functions"]["disassembled"], 100)
         self.assertTrue(report["entry_assembly"])

@@ -181,8 +181,14 @@ def _blocks(rows, extra=()):
                 leaders.add(target)
             if nxt in by_addr:
                 leaders.add(nxt)
-        elif kind == "goto" and target in by_addr:
-            leaders.add(target)
+        elif kind == "goto":
+            if target in by_addr:
+                leaders.add(target)
+            # An unconditional jump ends the block. Bytes after it are padding
+            # or another block. Folding them in made the jump's kind the
+            # padding's kind, so a tail jump became `return 0` or `goto 0x…`.
+            if nxt in by_addr:
+                leaders.add(nxt)
         elif kind in {"ret", "ijmp"} and nxt in by_addr:
             leaders.add(nxt)
     ordered = sorted(leaders)

@@ -272,6 +272,20 @@ class CallsAndSwitch(unittest.TestCase):
             self.assertIn("return (-1);", text)
             self.assertNotIn("goto", text)
 
+    def test_tail_jump_with_padding_is_a_call(self):
+        # endbr64; jmp 0x2000; ret; nop dword ptr [rax]. The ret is padding
+        # after the jump. It must not become `return 0`, and the jump must
+        # not stay `goto 0x2000`.
+        rel = (0x2000 - 0x1009).to_bytes(4, "little", signed=True)
+        raw = bytes.fromhex("f30f1efa") + b"\xe9" + rel + b"\xc3" + bytes.fromhex("0f1f8000000000")
+        md = Cs(CS_ARCH_X86, CS_MODE_64)
+        md.detail = True
+        insns = list(md.disasm(raw, 0x1000))
+        text = "\n".join(decompile_sketch(md, insns, "x86-64", names={0x2000: "target"}) or [])
+        self.assertIn("target();", text)
+        self.assertNotIn("goto", text)
+        self.assertNotIn("return 0;", text)
+
     def test_sign_flag_is_a_comparison(self):
         source = "int sign(int n){if (n < 0) return 1; return 0;}\nint main(){return sign(-1);}\n"
         with tempfile.TemporaryDirectory() as tmp:
