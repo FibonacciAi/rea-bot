@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import tarfile
+import threading
 import urllib.request
 
 from . import ROOT, store
@@ -154,17 +155,29 @@ def status():
             'next': None if ready else 'rea-bot engine setup (plan) -> approval -> rea-bot engine setup --apply --approve-source rea-agents@' + PINNED}
 
 
+# Optional backends the operator already installed. The session does not inherit the rest of the environment.
+_BACKEND_ENV = (
+    'GHIDRA_INSTALL_DIR', 'JAVA_HOME', 'REA_GHIDRA_STARTUP_TIMEOUT_MS', 'REA_GHIDRA_LANGUAGE_ID',
+    'REA_GHIDRA_COMPILER_SPEC_ID', 'REA_WABT_BIN_DIRECTORY', 'REA_WAKARU_COMMAND',
+    'REA_JAVASCRIPT_PRLIMIT_COMMAND', 'REA_ILSPY_CMD_PATH',
+)
+
+
 class Session:
     """One engine MCP session over stdio."""
 
-    def __init__(self, timeout=120):
+    def __init__(self, timeout=120, request_timeout=None):
         st = status()
         if not st['ready']:
             raise ValueError('REA engine not ready. ' + (st['next'] or ''))
         home = engine_home()
         env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ') if k in os.environ}
+        for key in _BACKEND_ENV:
+            if os.environ.get(key):
+                env[key] = os.environ[key]
         env['HOME'] = str(home)
         self.timeout = timeout
+        self.request_timeout = request_timeout
         self.proc = subprocess.Popen([st['node'], str(home / 'engine' / 'scripts' / 'rea.mjs'), 'mcp'],
                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                      env=env, cwd=str(home))
@@ -177,24 +190,37 @@ class Session:
         self.proc.stdin.write((json.dumps({'jsonrpc': '2.0', 'method': method, **({'params': params} if params else {})}) + '\n').encode())
         self.proc.stdin.flush()
 
+    def _kill(self):
+        if self.proc.poll() is None:
+            self.proc.kill()
+
     def request(self, method, params):
         self.seq += 1
         rid = self.seq
         self.proc.stdin.write((json.dumps({'jsonrpc': '2.0', 'id': rid, 'method': method, 'params': params}) + '\n').encode())
         self.proc.stdin.flush()
-        while True:
-            line = self.proc.stdout.readline()
-            if not line:
-                raise ValueError('REA engine exited unexpectedly.')
-            msg = json.loads(line)
-            if msg.get('id') == rid and 'method' not in msg:
-                if 'error' in msg:
-                    raise ValueError('Engine error: ' + json.dumps(msg['error'])[:1000])
-                return msg['result']
-            if 'method' in msg and 'id' in msg:
-                # Engine asked the client for something (sampling/elicitation). rea-bot grants nothing.
-                self.proc.stdin.write((json.dumps({'jsonrpc': '2.0', 'id': msg['id'], 'error': {'code': -32601, 'message': 'Not supported by rea-bot.'}}) + '\n').encode())
-                self.proc.stdin.flush()
+        killer = None
+        if self.request_timeout:
+            killer = threading.Timer(self.request_timeout, self._kill)
+            killer.daemon = True
+            killer.start()
+        try:
+            while True:
+                line = self.proc.stdout.readline()
+                if not line:
+                    raise ValueError('REA engine exited unexpectedly.')
+                msg = json.loads(line)
+                if msg.get('id') == rid and 'method' not in msg:
+                    if 'error' in msg:
+                        raise ValueError('Engine error: ' + json.dumps(msg['error'])[:1000])
+                    return msg['result']
+                if 'method' in msg and 'id' in msg:
+                    # Engine asked the client for something (sampling/elicitation). rea-bot grants nothing.
+                    self.proc.stdin.write((json.dumps({'jsonrpc': '2.0', 'id': msg['id'], 'error': {'code': -32601, 'message': 'Not supported by rea-bot.'}}) + '\n').encode())
+                    self.proc.stdin.flush()
+        finally:
+            if killer:
+                killer.cancel()
 
     def close(self):
         if self.proc.poll() is None:
@@ -229,7 +255,7 @@ def list_tools(match=None):
     return tools
 
 
-def call_batch(run_id, calls):
+def call_batch(run_id, calls, request_timeout=None):
     """calls: [{"tool": name, "arguments": {...}}]; runs sequentially in one engine session."""
     run = store.Run(run_id)
     if not isinstance(calls, list) or not calls or len(calls) > 50:
@@ -237,7 +263,7 @@ def call_batch(run_id, calls):
     out_dir = run.dir / 'engine'
     out_dir.mkdir(exist_ok=True)
     start = len(list(out_dir.glob('*.json')))
-    s = Session()
+    s = Session(request_timeout=request_timeout)
     summaries = []
     try:
         for i, c in enumerate(calls):

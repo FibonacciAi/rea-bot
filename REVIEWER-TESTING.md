@@ -4,7 +4,7 @@ Free and open source (MIT). No accounts, keys or payments. Needs Python 3.10+ an
 
 ## A. In the app (after adding the plugin)
 
-1. Ask: **"Lostwax status"**. Expect version `0.5.0`, the two skill paths, `engine.ready` true or false, `native.ready` true or false, and `entitlements.plan: free` (certificates are free and unlimited).
+1. Ask: **"Lostwax status"**. Expect version `0.12.0`, the two skill paths, `engine.ready` true or false, `native.ready` true or false, `ghidra.ready` true or false, and `entitlements.plan: free` (certificates are free and unlimited).
 2. Ask: **"Use Lostwax on its bundled example: try the naive rebuild in reconstruction-naive first."** The bot should:
    - create a run for `examples/search-fixture/original` (route `javascript-application`);
    - either call the REA engine (if staged) or, if the engine truly cannot run here, record an engine waiver (shown in SPEC.md);
@@ -46,9 +46,9 @@ python3 bin/rea-bot native status
 python3 bin/rea-bot native setup --apply --approve-source lostwax-native@1   # once, after you accept the plan
 ```
 
-`tests/test_native.py` disassembles `/bin/ls` (x86-64 function bounds, CFG, call graph, import edges, string xrefs), checks a compiled `add`/`sub` signature and call, parses and executes a tiny `add` wasm, round-trips an asar, and refuses a zip path escape. With wasmtime installed, the generated numeric harness matches a Python rebuild under `diff`.
+`tests/test_native.py` disassembles `/bin/ls` (x86-64 function bounds, CFG, call graph, import edges, a structural lift with a conditional branch), checks a compiled `add`/`sub` signature and call, builds an x86-32 and an ARM32 CFG when the cross linkers are present, reads DWARF parameter names when pyelftools is installed, parses a synthetic MSF PDB and a stored CAB, parses and executes a tiny `add` wasm, matches a wasm import-stub harness under `diff`, round-trips an asar, and refuses a zip path escape. NSIS and MSI unpacking runs when `makensis`, `msibuild`, `gcab` and olefile are present. With wasmtime installed, the generated numeric harness matches a Python rebuild under `diff`.
 
-`tests/test_native_live.py` uses real files when they are on disk: a CRC-32 wasm recovered from its JavaScript wrapper (4/4 cases, `declared-features-match`, global parity unknown), a Preact source map (12 modules), a `.deb` that unpacks to an ELF, Newtonsoft.Json metadata and CIL, and ripgrep builds for arm64 ELF, Windows PE and Apple arm64 Mach-O. The comparison with REA on the same files is `docs/BENCHMARK.md`. Analyze never executes the target. The CRC harness runs only inside `diff` after the wasm digest is approved.
+`tests/test_native_live.py` uses real files when they are on disk: a CRC-32 wasm recovered from its JavaScript wrapper (4/4 cases, `declared-features-match`, global parity unknown), a Preact source map (12 modules), a `.deb` that unpacks to an ELF, Newtonsoft.Json metadata table counts and a C# stack lift (and a sibling portable PDB when that file is present), ripgrep builds for arm64 ELF, Windows PE (named imports and a CodeView basename) and Apple arm64 Mach-O, and a Debian hello arm64 ELF with named PLT imports. The comparison with REA on the same files is `docs/BENCHMARK.md`. Analyze never executes the target. The CRC harness runs only inside `diff` after the wasm digest is approved.
 
 ## What should never happen
 

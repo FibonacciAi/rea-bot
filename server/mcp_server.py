@@ -42,11 +42,11 @@ TOOLS = [
     tool('rea_recheck', 'For routines: verify spec/log digests and optionally re-run the last executed cases with the same pinned approval; flags regressions and changed original command files.', {'run_id': S, 'rerun': {'type': 'boolean'}}, ['run_id'], False),
     tool('rea_report', 'Write SCORECARD.md: parity score, case score, mismatch evidence. Global parity stays unknown.', {'run_id': S}, ['run_id'], False),
     tool('rea_certify', 'Issue a portable parity certificate for a differential run (free and unlimited; never charges).', {'run_id': S}, ['run_id'], False),
-    tool('rea_native_status', 'Lostwax native engine readiness (capstone, LIEF, wasmtime, dnfile). Opt-in; the core stays dependency-free.', {}),
+    tool('rea_native_status', 'Lostwax native engine readiness (capstone, LIEF, wasmtime, dnfile; pyelftools and olefile when installed). Opt-in; the core stays dependency-free.', {}),
     tool('rea_native_setup', 'Plan or apply the pinned native-engine wheels. --apply needs approve lostwax-native@1. No system install.',
          {'apply': {'type': 'boolean'}, 'approve': S}, [], False),
-    tool('rea_analyze', 'Native analysis of the run target: disassembly and CFG for x86-64 and arm64, wasm exports, JS source maps, archives, asar, .NET CIL. Writes evidence for rea_prepare. Does not execute the target.',
-         {'run_id': S}, ['run_id'], False),
+    tool('rea_analyze', 'Native analysis of the run target: CFG for x86-64, x86-32, arm64 and arm32, named imports on x86-64, arm64, PE and Mach-O, a structural C-like lift with DWARF names in the body, PDB when present, wasm, JS source maps, archives including CAB/MSI/NSIS, and .NET metadata with a C# stack lift. decompiler is native (default), ghidra or auto. ghidra drives pinned Ghidra 12.1.4 headless from Lostwax and does not use the REA engine. Writes evidence for rea_prepare. Does not execute the target.',
+         {'run_id': S, 'decompiler': S}, ['run_id'], False),
     tool('rea_engine_status', 'REA engine (rea-agents 6.5.0) readiness and Node detection.', {}),
     tool('rea_engine_tools', 'List engine tool names, or full schemas for names containing match.', {'match': S, 'schema': {'type': 'boolean'}}),
     tool('rea_engine_call', 'Run 1-50 engine tool calls in one engine session; full results saved in the run folder, evidence ids recorded for rea_prepare.', {'run_id': S, 'calls': ARR}, ['run_id', 'calls'], False),
@@ -76,7 +76,7 @@ def call(name, a):
     if name == 'rea_certify': return api.certify(a['run_id'])
     if name == 'rea_native_status': return api.native_status()
     if name == 'rea_native_setup': return api.native_setup(a.get('apply', False), a.get('approve'))
-    if name == 'rea_analyze': return api.analyze(a['run_id'])
+    if name == 'rea_analyze': return api.analyze(a['run_id'], a.get('decompiler') or 'native')
     if name == 'rea_engine_status': return engine.status()
     if name == 'rea_engine_tools':
         tools = engine.list_tools(a.get('match'))

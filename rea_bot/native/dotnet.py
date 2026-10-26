@@ -59,7 +59,7 @@ _OPERAND = {"none": 0, "u8": 1, "i8": 1, "u16": 2, "i32": 4, "i64": 8, "f32": 4,
 def disassemble(code, limit=80):
     out = []
     i = 0
-    while i < len(code) and len(out) < limit:
+    while i < len(code) and (limit is None or len(out) < limit):
         op = code[i]
         i += 1
         if op == 0xFE:
@@ -75,6 +75,7 @@ def disassemble(code, limit=80):
         if kind is None:
             out.append({"offset": i - 1, "op": name, "text": name, "stopped": True})
             break
+        token = None
         if kind == "switch":
             if i + 4 > len(code):
                 break
@@ -92,6 +93,7 @@ def disassemble(code, limit=80):
             raw = code[i:i + n]
             i += n
             if kind == "token" and len(raw) == 4:
+                token = struct.unpack("<I", raw)[0]
                 text = name + " 0x" + raw[::-1].hex()
             elif kind == "none":
                 text = name
@@ -104,6 +106,8 @@ def disassemble(code, limit=80):
             else:
                 text = name + (" " + raw.hex() if raw else "")
         item = {"op": name, "text": text}
+        if token is not None:
+            item["token"] = token
         if prefix:
             item["prefix"] = prefix
         out.append(item)
@@ -160,6 +164,159 @@ def _user_strings(heap, limit=24):
     return out
 
 
+def _compressed(blob, index):
+    if index >= len(blob):
+        return 0, index
+    first = blob[index]
+    if first < 0x80:
+        return first, index + 1
+    if first < 0xC0 and index + 1 < len(blob):
+        return ((first & 0x3F) << 8) | blob[index + 1], index + 2
+    if index + 3 < len(blob):
+        return ((first & 0x1F) << 24) | (blob[index + 1] << 16) | (blob[index + 2] << 8) | blob[index + 3], index + 4
+    return 0, len(blob)
+
+
+def _sig_info(blob):
+    raw = bytes(getattr(blob, "value", b"") or b"")
+    if not raw:
+        return False, 0, True
+    flags = raw[0]
+    index = 1
+    if flags & 0x10:
+        _count, index = _compressed(raw, index)
+    count, index = _compressed(raw, index)
+    ret, _index = _compressed(raw, index)
+    return bool(flags & 0x20), count, ret == 0x01
+
+
+def _resolver(pe):
+    members = list(pe.net.mdtables.MemberRef.rows) if pe.net.mdtables.MemberRef is not None else []
+    methods = list(pe.net.mdtables.MethodDef.rows)
+
+    def resolve(token):
+        table = (token >> 24) & 0xFF
+        index = token & 0xFFFFFF
+        row = None
+        if table == 0x0A and 1 <= index <= len(members):
+            row = members[index - 1]
+        elif table == 0x06 and 1 <= index <= len(methods):
+            row = methods[index - 1]
+        if row is None:
+            return "token_%08x" % token, False, 0, True
+        hasthis, count, void = _sig_info(getattr(row, "Signature", None))
+        return str(row.Name), hasthis, count, void
+    return resolve
+
+
+def _slot(op, item):
+    tail = op.split(".")[-1]
+    if tail.isdigit():
+        return int(tail)
+    if tail == "m1":
+        return -1
+    parts = (item.get("text") or "").split()
+    if len(parts) >= 2 and parts[-1].lstrip("-").isdigit():
+        return int(parts[-1])
+    return 0
+
+
+_BIN = {"add": "+", "sub": "-", "mul": "*", "div": "/", "rem": "%", "and": "&", "or": "|", "xor": "^",
+        "ceq": "==", "cgt": ">", "clt": "<", "shl": "<<", "shr": ">>"}
+
+
+def decompile(method_name, hasthis, insns, resolve):
+    """Stack lift of one method body into C#-like statements."""
+    stack = []
+    lines = []
+
+    def pop():
+        return stack.pop() if stack else "stack"
+
+    def push(value):
+        stack.append(value)
+
+    for item in insns:
+        if len(lines) >= 40:
+            lines.append("/* lift truncated */")
+            break
+        op = item["op"]
+        if op.startswith("ldarg"):
+            slot = _slot(op, item)
+            push("this" if hasthis and slot == 0 else "arg%d" % slot)
+        elif op.startswith("ldloc"):
+            push("loc%d" % _slot(op, item))
+        elif op.startswith("stloc"):
+            lines.append("loc%d = %s;" % (_slot(op, item), pop()))
+        elif op == "ldc.i4.m1":
+            push("-1")
+        elif op.startswith("ldc.i4."):
+            push(op.split(".")[-1])
+        elif op.startswith("ldc."):
+            push((item.get("text") or "0").split()[-1])
+        elif op == "ldnull":
+            push("null")
+        elif op == "ldstr":
+            push("string")
+        elif op in _BIN:
+            right, left = pop(), pop()
+            push("(%s %s %s)" % (left, _BIN[op], right))
+        elif op in {"neg", "not"}:
+            push(("-%s" if op == "neg" else "~%s") % pop())
+        elif op in {"call", "callvirt", "newobj"}:
+            name, called_this, count, void = resolve(item.get("token") or 0)
+            args = [pop() for _ in range(max(0, count))]
+            args.reverse()
+            receiver = pop() if called_this else None
+            call = "%s(%s)" % (name, ", ".join(args))
+            if name == ".ctor":
+                target = "base" if receiver in {None, "this", "arg0"} else receiver
+                lines.append("%s(%s);" % (target, ", ".join(args)))
+            elif op == "newobj":
+                push("new %s" % call)
+            elif void:
+                lines.append("%s;" % ("%s.%s" % (receiver, call) if receiver else call))
+            else:
+                push("%s.%s" % (receiver, call) if receiver else call)
+        elif op == "dup":
+            push(stack[-1] if stack else "stack")
+        elif op == "pop":
+            if stack:
+                lines.append("%s;" % pop())
+        elif op.startswith(("brtrue", "brfalse", "beq", "bne", "bgt", "blt", "bge", "ble")):
+            cond = pop()
+            if op.startswith(("brfalse", "bne", "blt", "ble")):
+                cond = "!(%s)" % cond
+            lines.append("if (%s) goto %s;" % (cond, (item.get("text") or "").split()[-1]))
+        elif op in {"br", "br.s"}:
+            lines.append("goto %s;" % (item.get("text") or "").split()[-1])
+        elif op == "ret":
+            lines.append("return %s;" % pop() if stack else "return;")
+        elif op == "throw":
+            lines.append("throw %s;" % pop())
+    if not lines:
+        lines.append("/* %s */" % method_name)
+    return lines
+
+
+def _table_counts(md):
+    counts = {}
+    for name in dir(md):
+        if name.startswith("_"):
+            continue
+        table = getattr(md, name)
+        rows = getattr(table, "rows", None)
+        if rows is None:
+            continue
+        try:
+            count = len(rows)
+        except Exception:
+            continue
+        if count:
+            counts[name] = count
+    return counts
+
+
 def analyze_dotnet(path, max_methods=120):
     activate()
     import dnfile
@@ -175,31 +332,67 @@ def analyze_dotnet(path, max_methods=120):
             refs.append(str(row.Name))
     decoded = []
     with_body = 0
+    call_edges = 0
+    field_accesses = 0
+    resolve = _resolver(pe)
+    csharp_count = 0
+    branch_count = 0
+    calls = {"call", "callvirt", "calli", "newobj", "jmp"}
+    fields = {"ldfld", "stfld", "ldsfld", "stsfld", "ldflda", "ldsflda"}
     for row in methods:
         rva = int(row.Rva or 0)
         if not rva:
             continue
         with_body += 1
-        if len(decoded) >= max_methods:
-            continue
         try:
             off = pe.get_offset_from_rva(rva)
         except Exception:
             continue
-        insns = disassemble(_body(data[off:off + 8192]))
+        insns = disassemble(_body(data[off:off + 8192]), limit=None)
+        for item in insns:
+            op = item.get("op")
+            if op in calls:
+                call_edges += 1
+            elif op in fields:
+                field_accesses += 1
+        if len(decoded) >= max_methods:
+            continue
         if not insns:
             continue
+        hasthis, _count, _void = _sig_info(getattr(row, "Signature", None))
+        if str(row.Name) in {".ctor", ".cctor"}:
+            hasthis = True
+        csharp = decompile(str(row.Name), hasthis, insns, resolve)
+        if any(not line.startswith("/*") for line in csharp):
+            csharp_count += 1
+        if any(line.startswith("if (") for line in csharp):
+            branch_count += 1
         decoded.append({"name": str(row.Name), "rva": hex(rva), "instructions": len(insns),
-                        "il": [item["text"] for item in insns[:16]]})
+                        "il": [item["text"] for item in insns[:16]], "csharp": csharp[:24]})
     strings = []
     try:
         strings = _user_strings(pe.net.user_strings)
     except Exception:
         strings = []
+    tables = _table_counts(pe.net.mdtables)
+    pdb_report = None
+    sibling = Path(path).with_suffix(".pdb")
+    if sibling.is_file():
+        try:
+            from . import pdb as pdbmod
+            pdb_report = pdbmod.parse(sibling)
+        except Exception:
+            pdb_report = None
+    sample = next((item for item in decoded if item["name"] == ".ctor" and any(line.startswith("base(") or line.startswith("this(") for line in item["csharp"])), None)
+    if sample is None:
+        sample = next((item for item in decoded if item.get("csharp")), None)
     return {"kind": "dotnet", "path": str(path), "types": len(typedefs), "methods": len(methods),
             "methods_with_body": with_body, "methods_disassembled": len(decoded),
-            "assembly_refs": refs, "user_strings": strings, "methods_detail": decoded,
-            "scripts_executed": False,
-            "limitations": ["CIL is disassembled, not decompiled to C#.",
-                            "At most %d method bodies are decoded; the method count is complete." % max_methods,
+            "methods_decompiled": csharp_count, "methods_with_branches": branch_count,
+            "call_edges": call_edges, "field_accesses": field_accesses,
+            "tables": tables, "assembly_refs": refs, "user_strings": strings, "methods_detail": decoded,
+            "csharp_sample": {"name": sample["name"], "text": sample["csharp"]} if sample else None,
+            "pdb": pdb_report, "scripts_executed": False,
+            "limitations": ["C# text is a stack lift of CIL. It is not a full language decompiler.",
+                            "At most %d method bodies are lifted to C#. Call and field counts cover every method body." % max_methods,
                             "The assembly was not executed."]}
