@@ -247,23 +247,55 @@ def _macho_starts(binary):
         return []
 
 
-def _got_names(binary):
+def _function_glob_dat(binary):
+    """GLOB_DAT slots whose symbol is a function, not an object."""
+    found = {}
+    try:
+        rels = list(getattr(binary, "relocations", []) or [])
+    except Exception:
+        return found
+    for rel in rels:
+        if "GLOB_DAT" not in str(getattr(rel, "type", "")):
+            continue
+        sym = getattr(rel, "symbol", None)
+        if sym is None:
+            continue
+        name = str(getattr(sym, "name", "") or "")
+        kind = str(getattr(sym, "type", ""))
+        if not name or "OBJECT" in kind:
+            continue
+        if "FUNC" not in kind and "NOTYPE" not in kind:
+            continue
+        found.setdefault(_va(binary, rel.address), name)
+    return found
+
+
+def _got_names(binary, glob_dat=False):
     got = {}
     try:
         rels = list(getattr(binary, "pltgot_relocations", []) or [])
     except Exception:
         rels = []
+    if glob_dat:
+        # .plt.got stubs jump through GLOB_DAT slots (free, malloc). Those are
+        # not in pltgot_relocations. Data objects stay out of the function list:
+        # only a stub that actually jumps at the slot is named, in `_plt`.
+        try:
+            rels = rels + [rel for rel in list(getattr(binary, "relocations", []) or [])
+                           if "GLOB_DAT" in str(getattr(rel, "type", ""))]
+        except Exception:
+            pass
     for rel in rels:
         sym = getattr(rel, "symbol", None)
         name = str(getattr(sym, "name", "") or "") if sym is not None else ""
         if name:
-            got[_va(binary, rel.address)] = name
+            got.setdefault(_va(binary, rel.address), name)
     return got
 
 
 def _plt(binary, sections):
     """Map x86-64 PLT stub addresses to import names via RIP-relative jumps into the GOT."""
-    got = _got_names(binary)
+    got = _got_names(binary, glob_dat=True)
     if not got:
         return {}
     from capstone import CS_ARCH_X86, CS_MODE_64, CS_OP_MEM, Cs
@@ -296,7 +328,7 @@ def _plt(binary, sections):
 
 def _plt_arm64(binary, sections):
     """Map AArch64 PLT stubs (adrp; ldr; add; br) to import names."""
-    got = _got_names(binary)
+    got = _got_names(binary, glob_dat=True)
     if not got:
         return {}
     from capstone import CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN, Cs
@@ -1308,6 +1340,11 @@ def _one(binary, path=None):
         if any(start <= addr < end for start, end in exec_ranges):
             _place(kept, addr, 16, "pointer", names.get(addr, ""))
     for addr, name in _got_names(binary).items():
+        if name:
+            _place(kept, addr, 8, "import", name)
+    # A GLOB_DAT slot for a function symbol is the same kind of import as a
+    # JUMP_SLOT. Object relocations (vtables, stdout) stay data.
+    for addr, name in _function_glob_dat(binary).items():
         if name:
             _place(kept, addr, 8, "import", name)
     kept.sort(key=lambda f: f["address"])

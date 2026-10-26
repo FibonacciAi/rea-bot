@@ -204,6 +204,7 @@ class Binaries(TempHome):
         imports = [func for func in report["functions_detail"] if func.get("origin") == "import"]
         self.assertGreaterEqual(len(imports), 50)
         self.assertTrue(any(func.get("pseudocode") == ["%s();" % func["name"]] for func in imports if func.get("name")))
+        self.assertTrue(any(func.get("name") == "__libc_start_main" for func in imports))
 
     def test_import_slot_and_boundary_are_functions(self):
         from rea_bot.native.binary import _disassemble, _split_boundaries

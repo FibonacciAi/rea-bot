@@ -30,9 +30,100 @@ def structure_function(entry, by, succs, dom, ipdom, loops):
         return []
     preds = _preds(succs)
     dom = _dominators(entry, list(by), succs, preds)
-    builder = _Structurer(entry, by, succs, dom, _ipdom(by, succs), _loops(succs, dom))
-    builder.run()
-    return builder.render()
+    ipdom = _ipdom(by, succs)
+    loops = _loops(succs, dom)
+    builder = _Structurer(entry, by, succs, dom, ipdom, loops)
+    try:
+        builder.run()
+    except RecursionError:
+        # A very long straight chain would overflow the call stack before the
+        # depth cap. Emit each block once, in walk order, and let the goto
+        # tidy drop a jump that lands on the next label. This path does not
+        # run for a function the region walk already finished.
+        builder = _Structurer(entry, by, succs, dom, ipdom, loops)
+        builder.emit_flat_cfg()
+    lines = builder.render()
+    # A second entry is still a goto after the region walk. The condition
+    # structurer emits that block once, under the condition that reaches it.
+    # Keep it only when it removes a goto without reprinting a call or growing
+    # the text past the bound below.
+    if _goto_count(lines) == 0:
+        return lines
+    try:
+        from .reaching import structure_reaching
+        alt = structure_reaching(entry, by, succs)
+    except Exception:
+        alt = None
+    if _prefer_reaching(alt, lines, by):
+        return alt
+    return lines
+
+
+def _goto_count(lines):
+    return sum(len(re.findall(r"\bgoto\b", line)) for line in lines or [])
+
+
+def _prefer_reaching(alt, lines, by):
+    """True when the condition text has fewer gotos and stays within bounds."""
+    if not alt:
+        return False
+    if _goto_count(alt) >= _goto_count(lines):
+        return False
+    growth = len(alt) - len(lines)
+    if growth > max(80, len(lines) // 2):
+        return False
+    if any(len(line) > 4000 for line in alt):
+        return False
+    if not _balanced(alt):
+        return False
+    budget = {}
+    for block in by.values():
+        for stmt in block.get("stmts") or []:
+            raw = simplify_line(str(stmt)).strip()
+            if not _call_stmt(raw):
+                continue
+            budget[raw] = budget.get(raw, 0) + 1
+    seen = {}
+    for line in alt:
+        raw = line.strip()
+        if not _call_stmt(raw):
+            continue
+        seen[raw] = seen.get(raw, 0) + 1
+        if seen[raw] > budget.get(raw, 0):
+            return False
+    return True
+
+
+def _balanced(lines):
+    """False when an else is detached or the braces do not match."""
+    depth = 0
+    prev = ""
+    for line in lines:
+        raw = line.strip()
+        raw = re.sub(r"'(\\.|[^'])'", " ", raw)
+        raw = re.sub(r'"(\\.|[^"])*"', " ", raw)
+        if raw.startswith("else"):
+            attached = (
+                prev == "}" or prev.endswith("}")
+                or prev.startswith("if ") or prev.startswith("if(")
+                or prev.startswith("else if ") or prev.startswith("else if(")
+            )
+            if not attached:
+                return False
+        if raw:
+            prev = raw
+        depth += raw.count("{") - raw.count("}")
+        if depth < 0:
+            return False
+    return depth == 0
+
+
+def _call_stmt(raw):
+    head = (raw or "").lstrip()
+    if not head or head.startswith((
+            "if ", "if(", "else ", "while ", "for ", "switch ", "p_", "enter_", "leave_")):
+        return False
+    return bool(re.search(r"[A-Za-z_][A-Za-z0-9_]*\s*\(", head))
 
 
 def structure_cfg(blocks):
@@ -97,6 +188,7 @@ class _Structurer(object):
         self.leave_sets = 0
         self.last_stop = None
         self.case_targets = set()
+        self.dup_left = 16
 
     def run(self):
         self._emit(self.entry, set(), [], 0)
@@ -129,7 +221,48 @@ class _Structurer(object):
             if addr not in placed:
                 lines.append("loc_%x:" % addr)
                 lines.append(";")
-        return lines
+        return _tidy_gotos(lines)
+
+    def emit_flat_cfg(self):
+        """One block at a time, with no nested calls. Used only after a stack overflow."""
+        seen = set()
+        order = []
+        stack = [self.entry]
+        while stack:
+            node = stack.pop()
+            if node in seen or node not in self.by:
+                continue
+            seen.add(node)
+            order.append(node)
+            for target in reversed(self.succs.get(node, [])):
+                if target in self.by:
+                    stack.append(target)
+        for node in order:
+            self.emitted.add(node)
+            self.here(node)
+            block = self.by[node]
+            for stmt in block.get("stmts") or []:
+                self.emit_line(stmt)
+            targets = [item for item in self.succs.get(node, []) if item in self.by]
+            if block.get("kind") == "ijmp" and not (block.get("switch") or {}).get("cases"):
+                tail = block.get("tail_call")
+                if tail and "(" in tail:
+                    self.emit_line(tail if str(tail).endswith(";") else tail + ";")
+                elif tail:
+                    self.emit_line("%s();" % tail)
+                else:
+                    self.emit_line("indirect();")
+                continue
+            if block.get("kind") == "if" and len(targets) >= 2:
+                cond = block.get("cond") or "1"
+                self.emit_line("if (%s) {" % cond)
+                self.emit_line("  goto loc_%x;" % targets[0])
+                self.emit_line("} else {")
+                self.emit_line("  goto loc_%x;" % targets[1])
+                self.emit_line("}")
+                continue
+            if len(targets) == 1:
+                self.emit_line("goto loc_%x;" % targets[0])
 
     def emit_line(self, text):
         pad = "  " * self.indent
@@ -171,10 +304,16 @@ class _Structurer(object):
             self._emit_kids(node, barriers, ctx, depth)
             return
         if block.get("kind") == "ijmp":
-            # A PLT stub is a tail jump through the GOT. Name it as a call so the
-            # stub is a real function without a goto.
+            # An indirect tail is a call through a register, not a goto to a local
+            # label. A named PLT stub uses that name; an unknown target stays
+            # `indirect();`.
             tail = block.get("tail_call")
-            self.emit_line(("%s;" % tail) if tail else "goto indirect;")
+            if not tail:
+                self.emit_line("indirect();")
+            elif "(" in tail:
+                self.emit_line(tail if tail.endswith(";") else tail + ";")
+            else:
+                self.emit_line("%s();" % tail)
             self._emit_kids(node, barriers, ctx, depth)
             return
         if len(targets) == 1:
@@ -228,14 +367,16 @@ class _Structurer(object):
         cond, then_n, else_n, consumed = self._fold(node)
         for extra in consumed:
             self.emitted.add(extra)
-        # Constant flags (a cleared overflow test) have one live arm. Emitting
-        # `if (0 != 0)` keeps a dead goto; the live arm is ordinary fallthrough.
-        if cond in {"0", "0 != 0", "1 == 0"} and else_n is not None:
+        # A comparison the lifter already rendered as two literals has one live arm.
+        # Emitting both arms keeps a dead goto. The same check covers a cleared
+        # overflow test (`0 != 0` / `1 == 1`).
+        truth = _const_bool(cond)
+        if truth is False and else_n is not None:
             self._realize(node, else_n, barriers, ctx, depth)
             self._bury_dead(then_n, node)
             self._after_if(self._follow(node, ctx), barriers, ctx, depth, consumed)
             return
-        if cond in {"1", "0 == 0", "1 != 0", "1 == 1"}:
+        if truth is True:
             self._realize(node, then_n, barriers, ctx, depth)
             self._bury_dead(else_n, node)
             self._after_if(self._follow(node, ctx), barriers, ctx, depth, consumed)
@@ -368,7 +509,11 @@ class _Structurer(object):
             else_node = nxt[1]
             previous, cursor = cursor, nxt[1]
         if len(ors) > 1:
-            expr = " || ".join("(%s)" % part for part in ors)
+            expr = _join_bool(ors, "||")
+            if expr == "1":
+                return "1", taken, else_node, consumed
+            if expr == "0":
+                return "0", taken, else_node, consumed
             return expr, taken, else_node, consumed
         ands = [cond]
         consumed = []
@@ -386,7 +531,11 @@ class _Structurer(object):
             then_node = nxt[0]
             previous, cursor = cursor, nxt[0]
         if len(ands) > 1:
-            expr = " && ".join("(%s)" % part for part in ands)
+            expr = _join_bool(ands, "&&")
+            if expr == "1":
+                return "1", then_node, fall, consumed
+            if expr == "0":
+                return "0", then_node, fall, consumed
             return expr, then_node, fall, consumed
         return cond, taken, fall, []
 
@@ -477,18 +626,28 @@ class _Structurer(object):
         dup = self._small_tail(target) or self._structured_tail(target, ctx)
         if dup:
             return ("dup", dup)
-        copied = self._copy_region(target, barriers, ctx, set(), 8, 8)
+        copied = self._copy_region(target, barriers, ctx, set(), 8, 8, [0])
         if copied:
             return ("dup", copied)
+        if self.dup_left > 0 and target not in self.loops:
+            wider = self._copy_region(target, barriers, ctx, set(), 12, 3, [0])
+            if wider and not any("goto " in line for line in wider):
+                cost = sum(1 for line in wider if line.strip() and not line.strip().startswith(("if ", "}", "else")))
+                if 0 < cost <= self.dup_left:
+                    self.dup_left -= cost
+                    return ("dup", wider)
         return ("line", "goto loc_%x;" % target)
 
-    def _copy_region(self, target, barriers, ctx, seen, blocks_left, stmts_left):
+    def _copy_region(self, target, barriers, ctx, seen, blocks_left, stmts_left, visits=None):
         """Duplicate a tiny region whose every path ends at a barrier, continue, or return.
 
         The block was already emitted on another path. Copying it here removes the
         goto. Each path runs the copy once, so a call in the region stays one call.
         """
-        if blocks_left < 0 or stmts_left < 0 or target in seen or target not in self.by:
+        if visits is None:
+            visits = [0]
+        visits[0] += 1
+        if visits[0] > 48 or blocks_left < 0 or stmts_left < 0 or target in seen or target not in self.by:
             return None
         if target in barriers:
             return []
@@ -513,8 +672,8 @@ class _Structurer(object):
             return None
         succs = [item for item in self.succs.get(target, []) if item in self.by or item in barriers]
         if block.get("kind") == "if" and len(succs) >= 2:
-            then_lines = self._copy_region(succs[0], barriers, ctx, seen, blocks_left - 1, stmts_left - len(stmts))
-            else_lines = self._copy_region(succs[1], barriers, ctx, seen, blocks_left - 1, stmts_left - len(stmts))
+            then_lines = self._copy_region(succs[0], barriers, ctx, seen, blocks_left - 1, stmts_left - len(stmts), visits)
+            else_lines = self._copy_region(succs[1], barriers, ctx, seen, blocks_left - 1, stmts_left - len(stmts), visits)
             if then_lines is None or else_lines is None:
                 return None
             cond = block.get("cond")
@@ -523,9 +682,10 @@ class _Structurer(object):
             if not cond:
                 return None
             lines = list(stmts)
-            if cond in {"1", "0 == 0", "1 != 0", "1 == 1"}:
+            truth = _const_bool(cond)
+            if truth is True:
                 return lines + then_lines
-            if cond in {"0", "0 != 0", "1 == 0"}:
+            if truth is False:
                 return lines + else_lines
             lines.append("if (%s) {" % cond)
             lines.extend("  " + line for line in then_lines)
@@ -535,7 +695,7 @@ class _Structurer(object):
             lines.append("}")
             return lines
         if len(succs) == 1:
-            rest = self._copy_region(succs[0], barriers, ctx, seen, blocks_left - 1, stmts_left - len(stmts))
+            rest = self._copy_region(succs[0], barriers, ctx, seen, blocks_left - 1, stmts_left - len(stmts), visits)
             if rest is None:
                 return None
             return stmts + rest
@@ -724,16 +884,22 @@ class _Structurer(object):
         self.out.append(("leave_init", (header, self.indent)))
         self.emit_line("do {")
         self.indent += 1
-        self._emit_stmts(header)
         ctx2 = ctx + [{"kind": "loop", "header": header, "exit": exit_}]
         body_barriers = set(barriers)
         body_barriers.update({header, latch})
         if exit_ is not None:
             body_barriers.add(exit_)
         targets = self.succs.get(header, [])
-        enter = targets[0] if targets else None
-        if enter is not None and enter not in {header, latch}:
-            self._emit(enter, body_barriers, ctx2, depth + 1)
+        # The header test chooses an arm inside the loop. Emitting only the
+        # first successor drops a call on the other arm, which is what a
+        # virtual call in `do { if (p) p->area(); } while (...)` looks like.
+        if self.by[header].get("kind") == "if" and len(targets) >= 2:
+            self._write_if(header, body_barriers, ctx2, depth)
+        else:
+            self._emit_stmts(header)
+            enter = targets[0] if targets else None
+            if enter is not None and enter not in {header, latch}:
+                self._emit(enter, body_barriers, ctx2, depth + 1)
         for stmt in self.by[latch].get("stmts") or []:
             if not stmt.startswith("return "):
                 self.emit_line(stmt)
@@ -948,6 +1114,11 @@ class _Structurer(object):
         found = self._leads_to_ret(target, 0)
         if found is None:
             return None
+        # The shared return names a phi. Copying one predecessor's value
+        # here would print a second return beside that phi.
+        for stmt in (self.by.get(found) or {}).get("stmts") or []:
+            if re.search(r"\breturn v_[0-9A-Fa-f]+_", str(stmt)):
+                return None
         if target != found:
             expr = self._expr_if_set(self.by.get(target))
             if expr is not None:
@@ -1173,12 +1344,18 @@ def _negate(cond):
         return "0"
     if cond == "0":
         return "1"
-    padded = " %s " % cond
+    text = cond.strip()
+    if text.startswith("!(") and text.endswith(")") and _match_paren(text, 0) == len(text) - 1:
+        return text[2:-1].strip()
+    # Flipping the first operator of `a && b` is not the negation.
+    if "&&" in text or "||" in text:
+        return "!(%s)" % text
+    padded = " %s " % text
     for op, flipped in sorted(_FLIP.items(), key=lambda item: -len(item[0])):
         token = " %s " % op
         if token in padded:
             return padded.replace(token, " %s " % flipped, 1).strip()
-    return "!(%s)" % cond
+    return "!(%s)" % text
 
 
 def _num(value):
@@ -1204,6 +1381,344 @@ def _reachable(entry, succs):
         seen.add(node)
         stack.extend(succs.get(node, []))
     return seen
+
+
+def _const_bool(cond):
+    """True or False when `cond` is a comparison of two literals, else None.
+
+    The literals are the ones the lifter already printed. Folding them drops a
+    dead arm of that printed test. A value that is not a literal stays unknown.
+    """
+    if cond is None:
+        return None
+    text = simplify_line(str(cond)).strip()
+    while text.startswith("(") and text.endswith(")") and _match_paren(text, 0) == len(text) - 1:
+        inner = text[1:-1].strip()
+        if inner == text:
+            break
+        text = inner
+    if text in {"1", "0 == 0", "1 != 0", "1 == 1"}:
+        return True
+    if text in {"0", "0 != 0", "1 == 0"}:
+        return False
+    if "&&" in text or "||" in text:
+        return None
+    match = re.fullmatch(r"(.+?)\s*(==|!=|>=|<=|>|<)\s*(.+)", text)
+    if not match:
+        return None
+    left, op, right = match.group(1).strip(), match.group(2), match.group(3).strip()
+    left_n, right_n = _literal(left), _literal(right)
+    if left_n is None or right_n is None:
+        return None
+    return {">": left_n > right_n, "<": left_n < right_n, ">=": left_n >= right_n,
+            "<=": left_n <= right_n, "==": left_n == right_n, "!=": left_n != right_n}[op]
+
+
+def _literal(text):
+    text = text.strip()
+    if len(text) >= 3 and text[0] == "'" and text[-1] == "'" and "\\" not in text[1:-1]:
+        body = text[1:-1]
+        if len(body) == 1:
+            return ord(body)
+        return None
+    return _int_or_none(text)
+
+
+def _join_bool(parts, op):
+    """Fold a chain of && or ||. A constant arm is dropped or short-circuits."""
+    live = []
+    for part in parts:
+        truth = _const_bool(part)
+        if op == "||" and truth is True:
+            return "1"
+        if op == "&&" and truth is False:
+            return "0"
+        if truth is True and op == "&&":
+            continue
+        if truth is False and op == "||":
+            continue
+        live.append(part)
+    if not live:
+        return "1" if op == "&&" else "0"
+    if len(live) == 1:
+        return live[0]
+    return (" %s " % op).join("(%s)" % part for part in live)
+
+
+def _tidy_gotos(lines):
+    """Drop a goto that lands on the next statement, and fold identical arms.
+
+    `if (c) { goto loc_x; } else { body } loc_x:` is `if (!c) { body }`.
+    Both arms jumping to the same label are one jump. A label with no goto is
+    removed. This does not move a call or invent a condition.
+    """
+    current = list(lines)
+    for _ in range(8):
+        nxt = _fold_header_loops(_fold_terminal_labels(
+            _close_backward_gotos(_drop_unreachable(_tidy_once(current)))))
+        if nxt == current:
+            return _drop_unused_labels(current)
+        current = nxt
+    return _drop_unused_labels(current)
+
+
+def _fold_terminal_labels(lines):
+    """A goto to a label that only continues or breaks is that same statement."""
+    replace = {}
+    for index, line in enumerate(lines[:-1]):
+        match = re.fullmatch(r"loc_([0-9a-fA-F]+):", line.strip())
+        if not match:
+            continue
+        action = lines[index + 1].strip()
+        if action not in {"continue;", "break;"}:
+            continue
+        nxt = lines[index + 2].strip() if index + 2 < len(lines) else ""
+        if nxt.startswith("}") or nxt.startswith("loc_") or nxt == "":
+            replace[match.group(1)] = action
+    if not replace:
+        return lines
+    label_at = {}
+    for index, line in enumerate(lines):
+        match = re.fullmatch(r"loc_([0-9a-fA-F]+):", line.strip())
+        if match and match.group(1) in replace:
+            label_at[match.group(1)] = index
+    blocked = set()
+    for index, line in enumerate(lines):
+        match = re.fullmatch(r"\s*goto loc_([0-9a-fA-F]+);", line)
+        if not match or match.group(1) not in replace:
+            continue
+        start = label_at.get(match.group(1), index)
+        lo, hi = sorted((start, index))
+        between = "\n".join(lines[lo:hi])
+        # A loop keyword between the label and the goto means the two
+        # continues would not leave the same loop. Leave that goto.
+        if re.search(r"\b(while|for)\b", between):
+            blocked.add(match.group(1))
+    rewritten = []
+    for line in lines:
+        match = re.fullmatch(r"(\s*)goto loc_([0-9a-fA-F]+);", line)
+        if match and match.group(2) in replace and match.group(2) not in blocked:
+            rewritten.append(match.group(1) + replace[match.group(2)])
+            continue
+        label = re.fullmatch(r"loc_([0-9a-fA-F]+):", line.strip())
+        if label and label.group(1) in replace and label.group(1) not in blocked:
+            continue
+        rewritten.append(line)
+    return rewritten
+
+
+def _fold_header_loops(lines):
+    """`loc: if (c) { body; goto loc; }` is `while (c) { body; }` when that goto is the only one."""
+    for index, line in enumerate(lines[:-1]):
+        match = re.fullmatch(r"loc_([0-9a-fA-F]+):", line.strip())
+        if not match:
+            continue
+        head = re.fullmatch(r"if \((.*)\) \{", lines[index + 1].strip())
+        if not head:
+            continue
+        close = _matching_close(lines, index + 1)
+        if close is None or lines[close].strip() != "}":
+            continue
+        if close - 1 <= index + 1:
+            continue
+        if lines[close - 1].strip() != "goto loc_%s;" % match.group(1):
+            continue
+        gotos = [pos for pos, item in enumerate(lines) if re.search(r"\bgoto loc_%s;" % match.group(1), item)]
+        if gotos != [close - 1]:
+            continue
+        indent = re.match(r"\s*", lines[index + 1]).group(0)
+        body = lines[index + 2:close - 1]
+        rewritten = [indent + "while (%s) {" % head.group(1)]
+        rewritten.extend(body)
+        rewritten.append(indent + "}")
+        return lines[:index] + rewritten + lines[close + 1:]
+    return lines
+
+
+def _indent_of(line):
+    return len(line) - len(line.lstrip(" "))
+
+
+def _matching_close(lines, open_at):
+    """Index of the line that closes the `{` on `open_at`, or None.
+
+    `} else {` closes the then-arm and also opens the else, so a later call
+    on that line starts a new arm.
+    """
+    raw0 = re.sub(r'"[^"]*"', '""', lines[open_at].strip())
+    depth = raw0.count("{") - raw0.count("}")
+    if raw0.startswith("}") and "{" in raw0:
+        depth = 1
+    if depth < 1:
+        depth = max(raw0.count("{"), 1)
+    for index in range(open_at + 1, len(lines)):
+        raw = re.sub(r'"[^"]*"', '""', lines[index].strip())
+        if raw.startswith("}") and depth == 1:
+            return index
+        depth += raw.count("{") - raw.count("}")
+        if depth <= 0:
+            return index
+    return None
+
+
+def _goto_only(lines):
+    body = [line.strip() for line in lines if line.strip()]
+    if len(body) != 1:
+        return None
+    match = re.fullmatch(r"goto loc_([0-9a-fA-F]+);", body[0])
+    return match.group(1) if match else None
+
+
+def _tidy_once(lines):
+    out = []
+    index = 0
+    while index < len(lines):
+        raw = lines[index].strip()
+        bare = re.fullmatch(r"goto loc_([0-9a-fA-F]+);", raw)
+        if bare and index + 1 < len(lines) and lines[index + 1].strip().lower() == "loc_%s:" % bare.group(1).lower():
+            index += 1
+            continue
+        single = re.fullmatch(r"if \((.*)\) goto loc_([0-9a-fA-F]+);", raw)
+        if single and index + 1 < len(lines) and lines[index + 1].strip().lower() == "loc_%s:" % single.group(2).lower():
+            index += 1
+            continue
+        match = re.fullmatch(r"if \((.*)\) \{", raw)
+        close = _matching_close(lines, index) if match else None
+        if match and close is not None:
+            cond = match.group(1)
+            pad = " " * _indent_of(lines[index])
+            close_text = lines[close].strip()
+            if close_text == "} else {":
+                else_close = _matching_close(lines, close)
+            else:
+                else_close = None
+            then_lines = lines[index + 1:close]
+            then_goto = _goto_only(then_lines)
+            else_goto = _goto_only(lines[close + 1:else_close]) if else_close is not None else None
+            nxt = else_close + 1 if else_close is not None else close + 1
+            nxt_label = lines[nxt].strip().lower() if nxt < len(lines) else ""
+            if then_goto and else_goto and then_goto.lower() == else_goto.lower() and else_close is not None:
+                out.append("%sgoto loc_%s;" % (pad, then_goto))
+                index = else_close + 1
+                continue
+            if then_goto and else_close is not None and nxt_label == "loc_%s:" % then_goto.lower():
+                if not any(line.strip() for line in lines[close + 1:else_close]):
+                    index = nxt
+                    continue
+                inner = _reindent(lines[close + 1:else_close], _indent_of(lines[index]) + 2)
+                out.append("%sif (%s) {" % (pad, _negate(cond)))
+                out.extend(inner)
+                out.append("%s}" % pad)
+                index = nxt
+                continue
+            if then_goto and else_close is None and nxt_label == "loc_%s:" % then_goto.lower():
+                index = nxt
+                continue
+            if else_goto and else_close is not None and nxt_label == "loc_%s:" % else_goto.lower():
+                inner = _reindent(then_lines, _indent_of(lines[index]) + 2)
+                out.append("%sif (%s) {" % (pad, cond))
+                out.extend(inner)
+                out.append("%s}" % pad)
+                index = nxt
+                continue
+        out.append(lines[index])
+        index += 1
+    return out
+
+
+def _reindent(lines, spaces):
+    body = [line for line in lines if line.strip()]
+    if not body:
+        return []
+    base = min(_indent_of(line) for line in body)
+    pad = " " * spaces
+    return [pad + line[base:] for line in body]
+
+
+def _drop_unreachable(lines):
+    """A goto immediately after a return, break, or continue does not run."""
+    out = []
+    dead = False
+    for line in lines:
+        raw = line.strip()
+        if not raw:
+            continue
+        if raw.endswith(":") or raw == "}" or raw.startswith("} ") or raw.startswith("} else"):
+            dead = False
+        if dead and raw.startswith("goto "):
+            continue
+        out.append(line)
+        dead = raw.startswith("return ") or raw in {"return;", "break;", "continue;"}
+    return out
+
+
+def _close_backward_gotos(lines):
+    """`loc_x: body goto loc_x;` is `while (1) { body }` when the body is straight.
+
+    Other jumps to the same label stay, and the label stays with them.
+    """
+    targets = {}
+    for line in lines:
+        match = re.search(r"\bgoto loc_([0-9a-fA-F]+);", line)
+        if match:
+            targets[match.group(1).lower()] = targets.get(match.group(1).lower(), 0) + 1
+    out = []
+    index = 0
+    while index < len(lines):
+        match = re.fullmatch(r"loc_([0-9a-fA-F]+):", lines[index].strip())
+        if not match:
+            out.append(lines[index])
+            index += 1
+            continue
+        label = match.group(1).lower()
+        if targets.get(label, 0) != 1:
+            out.append(lines[index])
+            index += 1
+            continue
+        depth = 0
+        end = None
+        for pos in range(index + 1, len(lines)):
+            raw = lines[pos].strip()
+            if depth == 0 and re.fullmatch(r"goto loc_%s;" % label, raw, flags=re.I):
+                end = pos
+                break
+            if depth == 0 and re.fullmatch(r"loc_[0-9a-fA-F]+:", raw):
+                break
+            depth += raw.count("{") - raw.count("}")
+            if depth < 0:
+                break
+        if end is None:
+            out.append(lines[index])
+            index += 1
+            continue
+        pad = " " * _indent_of(lines[index])
+        body = [line for line in lines[index + 1:end] if line.strip() and not re.fullmatch(r"loc_[0-9a-fA-F]+:", line.strip())]
+        out.append("%swhile (1) {" % pad)
+        out.extend(_reindent(body, len(pad) + 2) or [pad + "  ;"])
+        out.append("%s}" % pad)
+        index = end + 1
+    return out
+
+
+def _drop_unused_labels(lines):
+    needed = set()
+    for line in lines:
+        match = re.search(r"\bgoto loc_([0-9a-fA-F]+);", line)
+        if match:
+            needed.add(match.group(1).lower())
+    kept = []
+    index = 0
+    while index < len(lines):
+        match = re.fullmatch(r"loc_([0-9a-fA-F]+):", lines[index].strip())
+        if match and match.group(1).lower() not in needed:
+            if index + 1 < len(lines) and lines[index + 1].strip() == ";":
+                index += 2
+                continue
+            index += 1
+            continue
+        kept.append(lines[index])
+        index += 1
+    return kept
 
 
 def _collapse_empty(by, succs, entry):
@@ -1250,6 +1765,18 @@ def _collapse_empty(by, succs, entry):
         new_succs[node] = redirected
     if entry in remove:
         entry = mapping.get(entry, entry)
+    for block in new_by.values():
+        switch = block.get("switch") or None
+        cases = (switch or {}).get("cases") or []
+        if not cases:
+            continue
+        rewritten = []
+        for index, target in cases:
+            target = mapping.get(target, target)
+            if target in new_by:
+                rewritten.append((index, target))
+        if rewritten != cases:
+            block["switch"] = dict(switch, cases=rewritten)
     return new_by, new_succs, entry
 
 

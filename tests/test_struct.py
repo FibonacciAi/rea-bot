@@ -110,16 +110,18 @@ class SwitchRegion(unittest.TestCase):
 
 
 class Irreducible(unittest.TestCase):
-    def test_cross_edge_stays_a_goto(self):
+    def test_cross_edge_is_a_condition(self):
         text = _text([
             {"start": 0, "kind": "if", "cond": "c", "succs": [1, 2], "stmts": []},
             {"start": 1, "kind": "if", "cond": "a", "succs": [2, 3], "stmts": []},
             {"start": 2, "kind": "if", "cond": "b", "succs": [1, 3], "stmts": []},
             {"start": 3, "kind": "ret", "succs": [], "stmts": ["return 0;"]},
         ])
-        self.assertIn("goto", text)
+        self.assertNotIn("goto", text)
         self.assertIn("return 0;", text)
-        self.assertIn("loc_", text)
+        self.assertIn("a", text)
+        self.assertIn("b", text)
+        self.assertIn("c", text)
 
 
 class CountedLoops(unittest.TestCase):
@@ -210,6 +212,127 @@ class JoinPlacement(unittest.TestCase):
         self.assertEqual(drop_dead_stores(["call_1 = sub_10(arg0);", "return 1;"]),
                          ["sub_10(arg0);", "return 1;"])
         self.assertEqual(drop_dead_stores(["n = (n - 1);", "return n;"]), ["n = (n - 1);", "return n;"])
+
+
+class LiteralConditions(unittest.TestCase):
+    def test_literal_comparison_keeps_the_live_arm(self):
+        text = _text([
+            {"start": 0, "kind": "if", "cond": "2 != 10", "succs": [1, 2], "stmts": []},
+            {"start": 1, "kind": "goto", "succs": [3], "stmts": ["x = 1;"]},
+            {"start": 2, "kind": "goto", "succs": [3], "stmts": ["x = 2;"]},
+            {"start": 3, "kind": "ret", "succs": [], "stmts": ["return x;"]},
+        ])
+        self.assertIn("x = 1;", text)
+        self.assertNotIn("x = 2;", text)
+        self.assertNotIn("goto", text)
+        self.assertNotIn("2 != 10", text)
+
+    def test_character_literal_comparison(self):
+        text = _text([
+            {"start": 0, "kind": "if", "cond": "'0' == '-'", "succs": [1, 2], "stmts": []},
+            {"start": 1, "kind": "ret", "succs": [], "stmts": ["return 1;"]},
+            {"start": 2, "kind": "ret", "succs": [], "stmts": ["return 0;"]},
+        ])
+        self.assertIn("return 0;", text)
+        self.assertNotIn("return 1;", text)
+        self.assertNotIn("goto", text)
+
+    def test_goto_to_the_next_label_is_dropped(self):
+        from rea_bot.native.struct import _tidy_gotos
+        text = _tidy_gotos([
+            "if (a) {",
+            "  goto loc_10;",
+            "} else {",
+            "  work();",
+            "}",
+            "loc_10:",
+            "return 0;",
+        ])
+        self.assertEqual(text, ["if (!(a)) {", "  work();", "}", "return 0;"])
+
+    def test_backward_goto_is_a_loop(self):
+        from rea_bot.native.struct import _tidy_gotos
+        text = _tidy_gotos([
+            "loc_20:",
+            "switch (n) {",
+            "}",
+            "goto loc_20;",
+        ])
+        self.assertEqual(text, ["while (1) {", "  switch (n) {", "  }", "}"])
+        self.assertNotIn("goto", "\n".join(text))
+
+    def test_goto_after_return_is_dropped(self):
+        from rea_bot.native.struct import _tidy_gotos
+        text = _tidy_gotos(["return 1;", "goto indirect;"])
+        self.assertEqual(text, ["return 1;"])
+
+    def test_goto_to_a_continue_label_is_continue(self):
+        from rea_bot.native.struct import _tidy_gotos
+        text = _tidy_gotos([
+            "while (1) {",
+            "  if (a) {",
+            "loc_10:",
+            "    continue;",
+            "  }",
+            "  if (b) {",
+            "    goto loc_10;",
+            "  }",
+            "}",
+        ])
+        joined = "\n".join(text)
+        self.assertNotIn("goto", joined)
+        self.assertIn("continue;", joined)
+        self.assertNotIn("loc_10", joined)
+
+    def test_labeled_if_back_edge_is_while(self):
+        from rea_bot.native.struct import _tidy_gotos
+        text = _tidy_gotos([
+            "loc_10:",
+            "if (n > 0) {",
+            "  work();",
+            "  goto loc_10;",
+            "}",
+            "return 0;",
+        ])
+        self.assertEqual(text, ["while (n > 0) {", "  work();", "}", "return 0;"])
+
+    def test_identical_arms_are_one_goto(self):
+        from rea_bot.native.struct import _tidy_gotos
+        text = _tidy_gotos([
+            "if (a) {",
+            "  goto loc_10;",
+            "} else {",
+            "  goto loc_10;",
+            "}",
+            "loc_10:",
+            "return 0;",
+        ])
+        self.assertEqual(text, ["return 0;"])
+        self.assertNotIn("goto", "\n".join(text))
+
+
+class DoWhileCall(unittest.TestCase):
+    def test_call_on_the_other_arm_stays_in_the_loop(self):
+        text = _text([
+            {"start": 0, "kind": "if", "cond": "n <= 0", "succs": [5, 1], "stmts": []},
+            {"start": 1, "kind": "fall", "succs": [2], "stmts": []},
+            {"start": 2, "kind": "if", "cond": "p == 0", "succs": [4, 3], "stmts": []},
+            {"start": 3, "kind": "fall", "succs": [4], "stmts": ["call_1 = area(p);"]},
+            {"start": 4, "kind": "if", "cond": "p != end", "succs": [2, 6], "stmts": []},
+            {"start": 5, "kind": "goto", "succs": [6], "stmts": []},
+            {"start": 6, "kind": "ret", "succs": [], "stmts": ["return sum;"]},
+        ])
+        self.assertIn("area(p)", text)
+        self.assertIn("while", text)
+        self.assertLess(text.find("area(p)"), text.find("return sum;"))
+        self.assertNotIn("goto", text)
+
+
+class IndirectTail(unittest.TestCase):
+    def test_unknown_indirect_tail_is_a_call(self):
+        text = _text([{"start": 0, "kind": "ijmp", "succs": [], "stmts": []}])
+        self.assertIn("indirect();", text)
+        self.assertNotIn("goto", text)
 
 
 class Simplify(unittest.TestCase):

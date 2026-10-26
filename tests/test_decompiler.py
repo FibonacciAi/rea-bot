@@ -162,6 +162,34 @@ class CallsAndSwitch(unittest.TestCase):
             self.assertIn("while (1)", text)
             self.assertIn("== (-1)", text)
 
+    def test_loop_sum_is_not_folded_to_zero(self):
+        source = (
+            "__attribute__((noinline)) int item(int *p) { return *p; }\n"
+            "int total(int **items, int count) {\n"
+            "  int sum = 0;\n"
+            "  for (int index = 0; index < count; index++) {\n"
+            "    if (items[index]) sum += item(items[index]);\n"
+            "  }\n"
+            "  return sum;\n"
+            "}\n"
+            "int main() { return 0; }\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "sum.c"
+            src.write_text(source)
+            binary = Path(tmp) / "sum"
+            compiled = subprocess.run(
+                ["gcc", "-O2", "-fno-inline", "-fno-pie", "-no-pie", "-o", str(binary), str(src)],
+                capture_output=True, text=True)
+            if compiled.returncode != 0:
+                self.skipTest(compiled.stderr[-200:])
+            from rea_bot.native.binary import analyze_binary
+            report = analyze_binary(binary)
+            text = "\n".join(next(func["pseudocode"] for func in report["functions_detail"] if func["name"] == "total"))
+            returns = [line.strip() for line in text.splitlines() if line.strip().startswith("return ")]
+            self.assertTrue(any("call_" in line and "+" in line for line in text.splitlines()), text)
+            self.assertTrue(any(line != "return 0;" for line in returns), text)
+
     def test_jump_table_is_a_switch(self):
         cases = "\n".join("case %d: return %d;" % (index, index + 10) for index in range(16))
         source = "int sw(int x) { switch (x) { %s default: return -1; } }\nint main(){return sw(1);}\n" % cases
