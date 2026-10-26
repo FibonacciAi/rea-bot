@@ -180,7 +180,12 @@ class Binaries(TempHome):
         from rea_bot.native.binary import analyze_binary
         report = analyze_binary("/bin/ls")
         self.assertEqual(report["arch"], "x86-64")
-        self.assertGreaterEqual(report["functions"]["count"], 180)
+        self.assertGreaterEqual(report["functions"]["count"], 400)
+        plt = [func for func in report["functions_detail"] if func.get("origin") == "plt"]
+        self.assertGreaterEqual(len(plt), 100)
+        clean = [func for func in plt if func.get("name")
+                 and "goto " not in "\n".join(func.get("pseudocode") or [])]
+        self.assertGreaterEqual(len(clean), 100)
         self.assertGreater(report["functions"]["disassembled"], 100)
         self.assertTrue(report["entry_assembly"])
         self.assertGreater(report["cfg"]["edges"], 0)
@@ -190,8 +195,42 @@ class Binaries(TempHome):
         self.assertTrue(any(" " in text for text in report["strings"]["samples"]))
         self.assertTrue(set(report["imports"]) & {"strlen", "malloc", "strncmp", "free", "abort"})
         self.assertTrue(any("not executed" in line for line in report["limitations"]))
-        self.assertGreater(report["decompiler"]["lifted"], 0)
+        self.assertGreater(report["decompiler"]["lifted"], 100)
         self.assertTrue(any(line.startswith("if (") for line in report["decompiler"]["sample"]))
+        main = next(func for func in report["functions_detail"] if func["name"] == "main")
+        main_text = "\n".join(main.get("pseudocode") or [])
+        self.assertTrue("getopt_long(" in main_text and "argc" in main_text and "switch (" in main_text)
+        self.assertEqual(main["signature"]["source"], "usage")
+        imports = [func for func in report["functions_detail"] if func.get("origin") == "import"]
+        self.assertGreaterEqual(len(imports), 50)
+        self.assertTrue(any(func.get("pseudocode") == ["%s();" % func["name"]] for func in imports if func.get("name")))
+        self.assertTrue(any(func.get("name") == "__libc_start_main" for func in imports))
+
+    def test_import_slot_and_boundary_are_functions(self):
+        from rea_bot.native.binary import _disassemble, _split_boundaries
+        slot = {"address": 0x2000, "size": 8, "origin": "import", "name": "read"}
+        sections = [{"name": ".got", "va": 0x2000, "size": 8, "executable": False, "raw": b"\x10\x00\x00\x00\x00\x00\x00\x00"}]
+        _disassemble(None, "arm64", slot, sections, {}, [], {}, [0], None, "aapcs64")
+        self.assertEqual(slot["pseudocode"], ["read();"])
+        self.assertEqual(slot["instructions"], 0)
+        # add w0, w0, #1; ret; udf #0; add w0, w0, #1; ret
+        raw = bytes.fromhex("00040011c0035fd60000000000040011c0035fd6")
+        text = [{"name": ".text", "va": 0x1000, "size": len(raw), "executable": True, "raw": raw}]
+        kept = [{"address": 0x1000, "size": len(raw), "origin": "prologue", "name": "", "size_approximate": True}]
+        _split_boundaries(text, kept, "arm64")
+        kept.sort(key=lambda func: func["address"])
+        self.assertEqual([func["address"] for func in kept], [0x1000, 0x100c])
+        self.assertEqual(kept[0]["size"], 0xC)
+        self.assertEqual(kept[1]["origin"], "boundary")
+        self.assertEqual(kept[1]["size"], 8)
+
+    def test_newline_inside_a_c_string_is_kept(self):
+        from rea_bot.native.binary import _strings
+        raw = b"hi\nthere\x00plain\x00"
+        found = _strings([{"name": ".rodata", "va": 0x1000, "size": len(raw), "executable": False, "raw": raw}])
+        texts = [text for _, text in found]
+        self.assertIn("hi\nthere", texts)
+        self.assertIn("plain", texts)
 
     def test_compiled_signature_and_call(self):
         from rea_bot.native.binary import analyze_binary
@@ -272,6 +311,33 @@ class Binaries(TempHome):
             self.assertEqual(sig["source"], "dwarf")
             self.assertIn("left", " ".join(sig["args"]))
             self.assertIn("int", " ".join(sig["args"]))
+            body = "\n".join(by_name["add"].get("pseudocode") or [])
+            self.assertIn("left", body)
+            self.assertIn("right", body)
+
+    def test_macho_arm64_stub_slots(self):
+        from rea_bot.native.binary import _macho_arm64
+        raw = bytes.fromhex("900900b0100240f900021fd6900900b0100640f900021fd6900900b0100a40f900021fd6")
+        sections = [{"name": "__stubs", "va": 0x100283f1c, "raw": raw, "size": len(raw)}]
+        slots = {0x1003b4000: "__NSGetArgc", 0x1003b4008: "__NSGetArgv", 0x1003b4010: "__NSGetEnviron"}
+        mapping = _macho_arm64(sections, slots)
+        self.assertEqual(mapping[0x100283f1c], "__NSGetArgc")
+        self.assertEqual(mapping[0x100283f28], "__NSGetArgv")
+        self.assertEqual(mapping[0x100283f34], "__NSGetEnviron")
+
+    def test_decompiler_evidence_is_static(self):
+        from rea_bot.native.analyze import _build, _evidence
+        reports = [{"kind": "native-binary", "path": "/tmp/sample",
+                    "decompiler": {"lifted": 2, "with_control_flow": 1, "sample_name": "add", "sample": ["return (right + left);"]},
+                    "ghidra": {"version": "12.1.4", "functions": 4, "internal": 3, "external": 1,
+                              "decompiled_count": 1, "names_applied": 1, "params_applied": 2, "sample_name": "add"}}]
+        rows = _evidence(Path("/tmp/summary.json"), reports)
+        self.assertIn("native:decompiler", [row["id"] for row in rows])
+        self.assertIn("not a runtime pass", next(row["summary"] for row in rows if row["id"] == "native:decompiler"))
+        build = _build(rows, {})
+        feature = next(item for item in build["features"] if item["id"] == "decompiled-pseudocode")
+        self.assertEqual(feature["state"], "observed-static")
+        self.assertEqual(feature["evidence_ids"], ["native:decompiler"])
 
     def test_analyze_registers_evidence_for_prepare(self):
         run = api.new(str(EXAMPLE / "original"), "native-js")

@@ -59,7 +59,7 @@ _OPERAND = {"none": 0, "u8": 1, "i8": 1, "u16": 2, "i32": 4, "i64": 8, "f32": 4,
 def disassemble(code, limit=80):
     out = []
     i = 0
-    while i < len(code) and len(out) < limit:
+    while i < len(code) and (limit is None or len(out) < limit):
         op = code[i]
         i += 1
         if op == 0xFE:
@@ -332,21 +332,31 @@ def analyze_dotnet(path, max_methods=120):
             refs.append(str(row.Name))
     decoded = []
     with_body = 0
+    call_edges = 0
+    field_accesses = 0
     resolve = _resolver(pe)
     csharp_count = 0
     branch_count = 0
+    calls = {"call", "callvirt", "calli", "newobj", "jmp"}
+    fields = {"ldfld", "stfld", "ldsfld", "stsfld", "ldflda", "ldsflda"}
     for row in methods:
         rva = int(row.Rva or 0)
         if not rva:
             continue
         with_body += 1
-        if len(decoded) >= max_methods:
-            continue
         try:
             off = pe.get_offset_from_rva(rva)
         except Exception:
             continue
-        insns = disassemble(_body(data[off:off + 8192]))
+        insns = disassemble(_body(data[off:off + 8192]), limit=None)
+        for item in insns:
+            op = item.get("op")
+            if op in calls:
+                call_edges += 1
+            elif op in fields:
+                field_accesses += 1
+        if len(decoded) >= max_methods:
+            continue
         if not insns:
             continue
         hasthis, _count, _void = _sig_info(getattr(row, "Signature", None))
@@ -379,9 +389,10 @@ def analyze_dotnet(path, max_methods=120):
     return {"kind": "dotnet", "path": str(path), "types": len(typedefs), "methods": len(methods),
             "methods_with_body": with_body, "methods_disassembled": len(decoded),
             "methods_decompiled": csharp_count, "methods_with_branches": branch_count,
+            "call_edges": call_edges, "field_accesses": field_accesses,
             "tables": tables, "assembly_refs": refs, "user_strings": strings, "methods_detail": decoded,
             "csharp_sample": {"name": sample["name"], "text": sample["csharp"]} if sample else None,
             "pdb": pdb_report, "scripts_executed": False,
             "limitations": ["C# text is a stack lift of CIL. It is not a full language decompiler.",
-                            "At most %d method bodies are lifted; metadata row counts are complete." % max_methods,
+                            "At most %d method bodies are lifted to C#. Call and field counts cover every method body." % max_methods,
                             "The assembly was not executed."]}

@@ -70,6 +70,8 @@ class LiveTargets(TempHome):
         self.assertGreater(report["methods"], 1000)
         self.assertGreater(report["methods_disassembled"], 0)
         self.assertGreater(report["methods_decompiled"], 0)
+        self.assertGreater(report["call_edges"], 1000)
+        self.assertGreater(report["field_accesses"], 100)
         self.assertTrue(report["methods_detail"][0]["il"])
         self.assertTrue(report["csharp_sample"]["text"])
         tables = report["tables"]
@@ -138,6 +140,12 @@ class LiveTargets(TempHome):
         self.assertEqual(macho_report["arch"], "arm64")
         self.assertGreater(macho_report["functions"]["discovered"], 1000)
         self.assertGreater(macho_report["call_graph"]["edges"], 100)
+        self.assertGreater(macho_report["call_graph"]["import_edges"], 0)
+        self.assertGreater(macho_report["plt"], 0)
+        imported = {c.get("name") for f in macho_report["functions_detail"] for c in f.get("callees") or []
+                    if c.get("kind") == "import" and c.get("name")}
+        self.assertTrue(imported)
+        self.assertTrue(any(name.startswith("__") or name.startswith("_") for name in imported))
         self.assertGreater(macho_report["xrefs"]["strings"], 0)
         self.assertGreater(macho_report["decompiler"]["lifted"], 0)
 

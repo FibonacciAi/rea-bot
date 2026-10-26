@@ -9,10 +9,11 @@ WAIVER_RULE = ('If the engine truly cannot run here, pass --engine-waiver "<reas
 
 
 def status():
-    from .native import runtime as native_runtime
+    from .native import ghidra_backend, runtime as native_runtime
     return {'plugin': 'rea-bot', 'version': VERSION, 'display_name': 'Lostwax',
             'plugin_root': str(ROOT), 'skills': sorted(str(p) for p in (ROOT / 'skills').glob('*/SKILL.md')),
             'runs_home': str(store.home()), 'engine': engine.status(), 'native': native_runtime.status(),
+            'ghidra': ghidra_backend.status(),
             'entitlements': entitlements.state(),
             'target_execution': 'only via `diff` with a digest-pinned approval'}
 
@@ -217,9 +218,19 @@ def native_setup(apply=False, approve=None):
     return native_runtime.setup(bool(apply), approve)
 
 
-def analyze(run_id):
+def ghidra_status():
+    from .native import ghidra_backend
+    return ghidra_backend.status()
+
+
+def ghidra_setup(apply=False, approve=None):
+    from .native import ghidra_backend
+    return ghidra_backend.setup(bool(apply), approve)
+
+
+def analyze(run_id, decompiler='native'):
     from .native.analyze import analyze_run
-    return analyze_run(run_id)
+    return analyze_run(run_id, decompiler or 'native')
 
 
 def report_run(run_id):

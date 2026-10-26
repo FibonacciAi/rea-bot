@@ -197,15 +197,44 @@ def _run_id(label):
     return ("b-" + slug)[:48]
 
 
+def _lostwax_ghidra(path, report):
+    """Same file, Lostwax-owned headless Ghidra. REA is not called. The file is not executed."""
+    from rea_bot.native import ghidra_backend
+    ready = ghidra_backend.status()
+    if not ready.get("ready"):
+        return {"error": " ".join(ready.get("problems") or [])[:400], "scripts_executed": False}
+    base, names, signatures, hints = ghidra_backend.hints_from(report)
+    started = time.perf_counter()
+    try:
+        result = ghidra_backend.decompile(path, source_base=base, names=names, signatures=signatures, hints=hints,
+                                          analysis_timeout=480, decomp_timeout=90, limit=8)
+    except (ValueError, OSError) as err:
+        return {"error": str(err)[:500], "seconds": round(time.perf_counter() - started, 2), "scripts_executed": False}
+    ghidra_backend.merge(report, result, source_base=base)
+    info = report.get("ghidra") or {}
+    return {"seconds": round(time.perf_counter() - started, 2), "functions": info.get("functions"),
+            "internal": info.get("internal"), "external": info.get("external"),
+            "decompiled": info.get("decompiled_count"), "names_applied": info.get("names_applied"),
+            "params_applied": info.get("params_applied"), "matched_native": info.get("matched_native"),
+            "sample_name": info.get("sample_name"),
+            "sample_signature": _safe(info.get("sample_signature") or "", 180),
+            "sample_markers": info.get("sample_markers"), "scripts_executed": False,
+            "version": info.get("version")}
+
+
 def _timed_binary(label, path, note):
     started = time.perf_counter()
     report = analyze_binary(path)
     seconds = round(time.perf_counter() - started, 2)
+    ghidra_started = time.perf_counter()
+    ours = _lostwax_ghidra(path, report)
+    ours_seconds = ours.get("seconds", round(time.perf_counter() - ghidra_started, 2))
     run = api.new(str(path), _run_id(label))["run"]
     rea_started = time.perf_counter()
     rea = _binary_rea(run, path)
     rea_seconds = round(time.perf_counter() - rea_started, 2)
     return {"target": label, "lostwax": _binary_lost(report), "lostwax_seconds": seconds,
+            "lostwax_ghidra": ours, "lostwax_ghidra_seconds": ours_seconds,
             "rea": rea, "rea_seconds": rea_seconds, "proof": note}
 
 
@@ -215,7 +244,10 @@ def _elf(root):
 
 def _add(rows, row):
     rows.append(row)
+    ghidra = row.get("lostwax_ghidra") or {}
     print(json.dumps({"done": row["target"], "lostwax_seconds": row.get("lostwax_seconds"),
+                      "ghidra_seconds": row.get("lostwax_ghidra_seconds"),
+                      "ghidra_functions": ghidra.get("functions"), "ghidra_error": (ghidra.get("error") or "")[:180],
                       "rea_seconds": row.get("rea_seconds"),
                       "rea": (row.get("rea") or {}).get("text", "")[:300]}, ensure_ascii=False), flush=True)
 
