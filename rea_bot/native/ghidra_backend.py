@@ -192,6 +192,17 @@ def setup(apply=False, approve=None):
     return status()
 
 
+def _typed_arg(text):
+    """Split `char **argv` into the type and the parameter name. Stars stay on the type."""
+    raw = str(text or "").strip()
+    match = re.search(r"[A-Za-z_][A-Za-z0-9_]*$", raw)
+    if not match:
+        return "", ""
+    pname = _token(match.group(0))
+    ptype = raw[:match.start()].strip()
+    return pname, ptype
+
+
 def _token(text):
     match = _NAME.search(str(text or ""))
     if not match:
@@ -216,7 +227,7 @@ def hints_from(report):
         elif token == "entry":
             names.setdefault(addr, "entry")
         signature = func.get("signature") or {}
-        if signature.get("source") == "dwarf":
+        if signature.get("source") in {"dwarf", "usage"}:
             signatures[addr] = signature
             hints.append(addr)
         if token in {"main", "add", "_start", "entry"}:
@@ -243,26 +254,37 @@ def hints_from(report):
     return base, names, signatures, ordered[:24]
 
 
-def _config(path, source_base, names, signatures, hints, limit, decomp_timeout):
+def externs_from(report):
+    """Catalog prototypes for import names on a native report."""
+    from .prototypes import extern_prototypes
+    return extern_prototypes(report.get("imports") or [])
+
+
+def _config(path, source_base, names, signatures, hints, limit, decomp_timeout, externs=None):
     lines = ["out\t" + str(path), "source_base\t%x" % source_base, "limit\t%d" % limit,
              "decomp_timeout\t%d" % decomp_timeout]
-    for addr, name in list(names.items())[:4000]:
+    for addr, name in list(names.items())[:16000]:
         token = _token(name)
         if token:
             lines.append("name\t%x\t%s" % (addr, token))
     for addr, signature in signatures.items():
         for index, arg in enumerate(signature.get("args") or []):
-            parts = str(arg).split()
-            if not parts:
-                continue
-            pname = _token(parts[-1])
-            ptype = " ".join(parts[:-1]) if len(parts) > 1 else ""
+            pname, ptype = _typed_arg(arg)
             if pname:
                 lines.append("param\t%x\t%d\t%s\t%s" % (addr, index, ptype, pname))
         returns = str(signature.get("returns") or "")
         if returns and returns != "unknown":
             lines.append("ret\t%x\t%s" % (addr, returns))
-    for addr in hints[:limit]:
+    for proto in list(externs or [])[:500]:
+        fields = ["extern", proto["name"], proto["return"]]
+        for typ, pname in proto["params"]:
+            fields.append("%s|%s" % (typ, pname))
+        if proto.get("varargs"):
+            fields.append("...|")
+        lines.append("\t".join(fields))
+    # limit <= 0 decompiles every internal function, so a hint list is not a cap.
+    hinted = hints if int(limit) <= 0 else hints[:limit]
+    for addr in hinted:
         lines.append("hint\t%x" % addr)
     return "\n".join(lines) + "\n"
 
@@ -276,8 +298,12 @@ def _log_tail(path):
 
 
 def decompile(path, source_base=0, names=None, signatures=None, hints=None, analysis_timeout=480,
-              decomp_timeout=60, limit=16):
-    """Import one file in headless Ghidra and return functions plus C. Does not execute the file."""
+              decomp_timeout=60, limit=16, externs=None):
+    """Import one file in headless Ghidra and return functions plus C. Does not execute the file.
+
+    limit <= 0 decompiles every non-external function. A positive limit is how many
+    functions to decompile, not a sample cap of 32.
+    """
     blocked = problems()
     if blocked:
         raise ValueError(" ".join(blocked))
@@ -286,7 +312,11 @@ def decompile(path, source_base=0, names=None, signatures=None, hints=None, anal
     names = names or {}
     signatures = signatures or {}
     hints = hints or []
-    limit = max(1, min(int(limit), 32))
+    limit = int(limit)
+    if limit < 0:
+        limit = 0
+    else:
+        limit = min(limit, 100000)
     started = time.perf_counter()
     with tempfile.TemporaryDirectory(prefix="lostwax-ghidra-") as tmp:
         tmp = Path(tmp)
@@ -295,7 +325,8 @@ def decompile(path, source_base=0, names=None, signatures=None, hints=None, anal
         config = tmp / "config.txt"
         output = tmp / "out.json"
         log = tmp / "analyze.log"
-        config.write_text(_config(output, int(source_base), names, signatures, hints, limit, int(decomp_timeout)))
+        config.write_text(_config(output, int(source_base), names, signatures, hints, limit,
+                                  int(decomp_timeout), externs))
         cmd = [str(headless), str(project), "Lostwax", "-import", str(path), "-scriptPath", str(SCRIPT_DIR),
                "-postScript", "LostwaxDecompile.java", str(config), "-deleteProject",
                "-analysisTimeoutPerFile", str(int(analysis_timeout)), "-log", str(log)]
@@ -305,7 +336,8 @@ def decompile(path, source_base=0, names=None, signatures=None, hints=None, anal
         home = _java_home()
         if home:
             env["JAVA_HOME"] = home
-        budget = int(analysis_timeout) + int(decomp_timeout) * limit + 180
+        per_function = 7200 if limit == 0 else int(decomp_timeout) * max(limit, 1)
+        budget = int(analysis_timeout) + per_function + 180
         try:
             proc = subprocess.run(cmd, text=True, capture_output=True, timeout=budget, env=env, cwd=str(tmp))
         except subprocess.TimeoutExpired as err:
