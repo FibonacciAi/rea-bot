@@ -19,9 +19,9 @@ Owned instruction-boundary fixtures and x86-64 assembly/C differentials exercise
 
 Ghidra remains explicit opt-in. Its complete tree must match a locally retained SHA-pinned ZIP, Java probe and launch share one selected runtime, and temporary environment/HOME/JVM user.home and process-group cleanup are enforced. `limit=0` selects all internal functions but does not certify completion. Attempted, completed, failed and truncated counts are separate; complete-body counts exclude empty/failed/truncated results. A process budget is at most 14,400 seconds, the report cap is 128 MiB, and C truncated at 200,000 characters is flagged. Real Ghidra tests additionally require explicit `REA_BOT_TEST_GHIDRA=1`. Type/name metadata cannot inject config control fields; the post-script rejects duplicate controls and restricts the report to its private config directory. The Java script has been compiled/executed by pinned real Ghidra on an owned GCC fixture; all 21 internal functions completed without truncation in that fixture. This is static backend validation, not equivalence of its C output. These are isolation/capture bounds, not a security sandbox.
 
-## Historical upstream 0.11.0 structural report
+## Historical upstream structural report (through 0.12.0)
 
-The following report and tables are retained verbatim from upstream commit `8f2e4f7a700a4827b3d3611810097c777a049abb`. They are author-reported measurements of the older structural implementation, with different discovered function sets. Claims within this historical report are not independent observations or current typed-coverage/equivalence claims.
+The following report and tables are retained from the upstream structural implementation through its 0.12.0 readability work (last upstream commit `3cf41f8`, which includes the merge base `8f2e4f7`). They are author-reported measurements of the structural sketch, with different discovered function sets. Claims within this historical report are not independent observations or current typed-coverage/equivalence claims.
 
 # Lostwax decompiler
 

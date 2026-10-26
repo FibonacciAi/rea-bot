@@ -378,11 +378,11 @@ class Arm64Call(unittest.TestCase):
             insns = list(md.disasm(bytes(text.content), int(text.virtual_address)))
             split = next(insn.address for insn in insns if insn.mnemonic == "fcmp")
             both = [insn for insn in insns if insn.address < split]
-            rendered = "\n".join(decompile_function(md, both, "arm64") or [])
+            rendered = "\n".join(decompile_sketch(md, both, "arm64") or [])
             self.assertNotIn("if (1)", rendered)
             self.assertIn("== 2", rendered)
             zf = [insn for insn in insns if insn.address >= split]
-            zf_text = "\n".join(decompile_function(md, zf, "arm64") or [])
+            zf_text = "\n".join(decompile_sketch(md, zf, "arm64") or [])
             self.assertNotIn("if (1)", zf_text)
             self.assertIn("== 0", zf_text)
 
@@ -425,7 +425,7 @@ class Arm64Call(unittest.TestCase):
             md = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
             md.detail = True
             insns = list(md.disasm(bytes(text.content), int(text.virtual_address)))
-            rendered = "\n".join(decompile_function(md, insns, "arm64") or [])
+            rendered = "\n".join(decompile_sketch(md, insns, "arm64") or [])
             self.assertNotIn("if (1)", rendered)
             self.assertIn("arg0 < arg1", rendered)
             self.assertIn("arg0 < arg2", rendered)
