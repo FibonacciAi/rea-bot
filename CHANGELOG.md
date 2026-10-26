@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.12.0
+The owned decompiler beats stock Ghidra 12.1.4 on the `/bin/ls` and ripgrep readability targets below. Ghidra remains an optional backend. Global parity stays unknown.
+- A conditional branch with no flags of its own is copied once per predecessor when those compares disagree, and each edge keeps its condition. A copied region whose condition is missing stays a `goto`. A constant `0` or `1` condition keeps the live arm. `ccmp`, `ccmn`, `fcmp`, and `bics` record flags.
+- Each PLT stub is its own function. A named GOT slot is `name();`. An approximate function is split after `ret` or `udf` padding when an earlier branch in that range does not target the cut and the range has at most eight cuts. eh_frame ranges stay whole. A NUL-terminated string may contain a newline or a tab; that pass runs only while the string cap has room.
+- On `/bin/ls`, native text is 509 functions, 728 gotos (1.43 each; stock 1.77), 37 in `main` (stock 43), 1,070 unnamed tokens (stock 5,694), 1 address literal (stock 2,374), 8,144 lines, about 2.4 seconds. Strings are 536 against the earlier 492. `if (1)` does not occur. `sub_174a0` still has 134 gotos, `sub_127a0` 104, `sub_14790` 80, and `sub_cb80` 51.
+- On ripgrep 14.1.1 ELF arm64, 7,463 functions have text (stock lists 7,386; a recount this run is 7,388), 1.06 gotos each (stock 2.46), no `if (1)`, 82 address literals, in about 94 seconds (stock about 300). Unnamed tokens stay under stock.
+- Readability tables and the scorecard are in `docs/DECOMPILER.md`.
+
+## 0.11.0
+The owned decompiler follows more joins, prints real flag conditions, and drops dead stores. Ghidra remains an optional backend. Global parity stays unknown.
+- A multi-entry post-dominator is the follow of an `if` when that `if` does not dominate it. A small already-emitted return tail with no unnamed tokens is duplicated. An irreducible loop extends to the nodes that can return to its header, up to 400. A standalone `goto` whose target is the next emitted block is dropped.
+- `jo` / `jno` and `b.vs` / `b.vc` print a signed overflow test. `bt` plus a carry branch prints a bit test. `subs`, `adds`, `cmn`, `tst`, `ands`, `comiss`, and `fcomi` record flags. Plain arm64 `add` / `and` / `mul` do not, so they no longer hide the compare above them. Carry out of an add is an unsigned comparison with `2^width`. `tbz` / `tbnz` test one bit. Flags copy through a block that does not set them when every predecessor agrees. A cleared overflow flag prints `0 == 0` or `0 != 0`.
+- An unread assignment whose right-hand side has no call is removed. A pure unread call stays as a call. A byte inside a known string is quoted as that suffix.
+- Arm64 gaps outside `.plt`, `.init`, and `.fini` contribute a function at `stp x29, x30`, `paciasp` / `pacibsp`, a stack `str x30`, or `sub sp, sp` after `ret` / `nop` / `udf`. Unconditional tail jumps are discovery targets. The new-function cap is 4,000.
+- On `/bin/ls`, native gotos are 859 across 189 functions (4.54 per function; stock Ghidra is 1.77) and 53 in `main` (stock is 43). Unnamed tokens are 1,052, under the 1,061 of 0.9.0. `if (1)` is gone from `/bin/ls`. Address literals stay at 1. Mean token similarity against injected Ghidra is 0.193 on 188 functions.
+- On ripgrep 14.1.1 ELF arm64, discovery disassembles 7,156 functions. 7,135 have text, 1.72 gotos each, against stock Ghidra's 2.46 on 7,386 functions, in about 82 seconds. Stock Ghidra still lists 7,388 internal functions. Mean token similarity is 0.197 on 7,057 overlapping functions. `if (1)` remains on 43 arm64 branches whose flags never arrive.
+- Readability tables are in `docs/DECOMPILER.md`.
+
+## 0.10.0
+The owned decompiler structures regions instead of emitting a goto for every join. Ghidra remains an optional backend. Global parity stays unknown.
+- `rea_bot/native/struct.py` walks the dominator tree. Post-dominators place the follow of an `if`. Natural loops become `while`, `do-while`, or `for`, with `break` and `continue`. Condition chains become `&&` and `||`. Jump tables stay `switch`. A multi-entry join that is not the follow, and an irreducible cross edge, stay `goto`.
+- On the remeasured `/bin/ls`, native gotos fell from 1,944 to 1,004 across 189 functions (5.31 per function; stock Ghidra is 1.77) and from 168 to 70 in the `getopt_long` caller (stock is 43). The signature, the call, and the `switch` remain. Unnamed tokens are 1,074 against stock 5,694. Address literals stay at 1. Time is about 1.5 seconds.
+- On ripgrep 14.1.1 ELF arm64, discovery finds 6,963 functions and does not hit the cap. 6,959 decompiled functions have 1.70 gotos each, against stock Ghidra's 2.5 on its larger set, in about 46 seconds. Unnamed tokens and address literals stay lower. The sets are not the same: Ghidra still lists about 400 internal functions this discovery does not.
+- The discovery cap defaults to 16,000 functions and 1,200,000 instructions, overridable with `REA_BOT_MAX_FUNCTIONS` and `REA_BOT_MAX_INSNS`. Structured lines fold `x + 0`, `x * 1`, small integer arithmetic, and a doubled cast. `js` / `jns` become a sign comparison. Dead stores are not removed. Mean token similarity was not remeasured.
+- Readability tables are in `docs/DECOMPILER.md`. The Ghidra columns there are the 0.9.0 headless run. The Ghidra driver did not change.
+
+## 0.9.0
+The owned decompiler now covers calls and real-size functions. Ghidra remains an optional backend. Global parity stays unknown.
+- x86-64 and arm64 functions are decompiled without the 80-instruction and no-call limits. The decompiler recovers SysV, Win64 and AAPCS64 arguments, names callees from ELF, PE and Mach-O imports, and structures `if` / `else`, `while`, `break` / `continue` and jump-table `switch`. A leaf of at most 80 instructions with no calls still uses the milestone 1 structurer.
+- A caller of `getopt_long` is signed `int main(int argc, char **argv)` from that use. String literals that resolve are inlined. `goto` remains where a region does not reduce.
+- Every disassembled function is decompiled, and the time is reported. The 4,000-function discovery cap is unchanged. Headless Ghidra decompiles every internal function in one session. On stripped `/bin/ls` the session renames that caller to `main(int argc, char **argv)` before decompiling. Applying the whole import catalog on top of Ghidra's own prototypes made other functions noisier, so those prototypes are left as Ghidra recovered them.
+- Readability on the measured set is in `docs/DECOMPILER.md`. On `/bin/ls` and on ripgrep 14.1.1 ELF arm64 the native text is lower than stock Ghidra on unnamed tokens and address literals, and higher on `goto`. Lostwax+Ghidra beats stock on unnamed tokens for the `/bin/ls` `getopt_long` caller and ties it everywhere else on that binary. On ripgrep the two Ghidra passes match, because there is no recovered caller signature to apply. Mean token similarity is 0.188 on `/bin/ls` (188 functions) and 0.175 on ripgrep (4,006 functions).
+- Whole-assembly .NET call and field counts are reported. The C# lift stays capped at 120 methods.
+
+## 0.8.0
+Milestone 1 of Lostwax's own decompiler. Ghidra stays an optional oracle and an optional backend.
+- `rea_bot/native/decompile.py` versions registers and stack slots for x86-64 and arm64, copy-propagates spills, and structures one `if` or one `while`. Functions with calls, or more than 80 instructions, stay on the structural lift.
+- `similarity` reports a whole-text token score and a return-line score against a reference, including Ghidra when the pinned install is present. On `add`, the full-text score against Ghidra is 0.417 and the x86-64 return score is 0.833.
+- The plan and the later milestones are in `docs/DECOMPILER.md`.
+
 ## 0.7.0
 Opt-in Ghidra decompiler, driven by Lostwax. The default install stays dependency-free. REA stays an optional backend and is not on this path.
 - `rea-bot ghidra setup` plans the pinned Ghidra 12.1.4 zip. `--apply --approve-source lostwax-ghidra@12.1.4` downloads it, checks SHA-256, and extracts it under `REA_BOT_GHIDRA_HOME`. An existing `GHIDRA_INSTALL_DIR` is used only when `Ghidra/application.properties` matches that pin. Java 21 is required and is not installed by the command. A missing Java or a mismatched tree is an error for `--decompiler ghidra` and a recorded fallback for `--decompiler auto`.

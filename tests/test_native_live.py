@@ -70,6 +70,8 @@ class LiveTargets(TempHome):
         self.assertGreater(report["methods"], 1000)
         self.assertGreater(report["methods_disassembled"], 0)
         self.assertGreater(report["methods_decompiled"], 0)
+        self.assertGreater(report["call_edges"], 1000)
+        self.assertGreater(report["field_accesses"], 100)
         self.assertTrue(report["methods_detail"][0]["il"])
         self.assertTrue(report["csharp_sample"]["text"])
         tables = report["tables"]

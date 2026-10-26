@@ -339,9 +339,27 @@ def _attach_ghidra(reports, limitations, required):
             ghidra_backend.MAX_BINARIES, len(binaries) - ghidra_backend.MAX_BINARIES))
     for report in binaries[:ghidra_backend.MAX_BINARIES]:
         base, names, signatures, hints = ghidra_backend.hints_from(report)
+        # DWARF and recovered caller signatures only. Renaming every import slot, or
+        # forcing the small prototype catalog onto Ghidra's externals, made other
+        # functions noisier on stripped /bin/ls. Ghidra keeps its own import prototypes.
+        focused_names = {}
+        focused_sigs = {}
+        for func in report.get("functions_detail") or []:
+            signature = func.get("signature") or {}
+            if signature.get("source") not in {"dwarf", "usage"}:
+                continue
+            try:
+                addr = int(func["address"], 16)
+            except (TypeError, ValueError):
+                continue
+            focused_sigs[addr] = signatures.get(addr) or signature
+            if names.get(addr):
+                focused_names[addr] = names[addr]
         try:
-            result = ghidra_backend.decompile(report["path"], source_base=base, names=names, signatures=signatures,
-                                              hints=hints)
+            # limit 0 decompiles every internal function. One headless session; the decompiler is not re-entered.
+            result = ghidra_backend.decompile(report["path"], source_base=base, names=focused_names,
+                                              signatures=focused_sigs, hints=list(focused_sigs) or hints,
+                                              limit=0, decomp_timeout=12)
         except (ValueError, OSError) as err:
             if required:
                 raise

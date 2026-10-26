@@ -4,21 +4,41 @@ Disassembly and control flow are native (Capstone) for x86-64, x86-32, arm64 and
 Function bounds come from .eh_frame, the PE exception directory, Mach-O function starts,
 symbols, and direct call targets. Import stubs are named for ELF, PE and Mach-O.
 DWARF parameter names are written into the lifted body. PDB records are read when present.
+On x86-64 and arm64 the owned decompiler structures calls, if/while/switch and named callees.
+Leaf functions of at most 80 instructions still use the milestone 1 structurer.
 Nothing is executed.
 """
+import os
 import struct
 import time
 
 from . import dwarf, ehframe, lift, pdb
+from .decompile import decompile_function
+from .prototypes import convention_for, usage_signature
 from .runtime import activate
 
 _CFG_ARCH = {"x86-64", "arm64", "x86", "arm"}
 
-MAX_FUNCTIONS = 4000
-MAX_INSNS = 350_000
+def _env_int(name, default):
+    """Positive integer from the environment, or the default when unset or invalid."""
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return default
+
+
+DEFAULT_MAX_FUNCTIONS = 16000
+DEFAULT_MAX_INSNS = 1_200_000
+MAX_FUNCTIONS = _env_int("REA_BOT_MAX_FUNCTIONS", DEFAULT_MAX_FUNCTIONS)
+MAX_INSNS = _env_int("REA_BOT_MAX_INSNS", DEFAULT_MAX_INSNS)
 MAX_INSNS_FN = 6000
 MAX_STRINGS = 5000
-MAX_NEW_FUNCS = 400
+# Call and tail-call targets that .eh_frame did not name. Rust binaries tail-call
+# past the unwind table; 400 was below that gap on ripgrep.
+MAX_NEW_FUNCS = 4000
 
 _NOREPORT = {"abort", "exit", "_exit", "__stack_chk_fail", "__assert_fail", "longjmp", "__longjmp_chk", "err", "errx"}
 
@@ -227,23 +247,55 @@ def _macho_starts(binary):
         return []
 
 
-def _got_names(binary):
+def _function_glob_dat(binary):
+    """GLOB_DAT slots whose symbol is a function, not an object."""
+    found = {}
+    try:
+        rels = list(getattr(binary, "relocations", []) or [])
+    except Exception:
+        return found
+    for rel in rels:
+        if "GLOB_DAT" not in str(getattr(rel, "type", "")):
+            continue
+        sym = getattr(rel, "symbol", None)
+        if sym is None:
+            continue
+        name = str(getattr(sym, "name", "") or "")
+        kind = str(getattr(sym, "type", ""))
+        if not name or "OBJECT" in kind:
+            continue
+        if "FUNC" not in kind and "NOTYPE" not in kind:
+            continue
+        found.setdefault(_va(binary, rel.address), name)
+    return found
+
+
+def _got_names(binary, glob_dat=False):
     got = {}
     try:
         rels = list(getattr(binary, "pltgot_relocations", []) or [])
     except Exception:
         rels = []
+    if glob_dat:
+        # .plt.got stubs jump through GLOB_DAT slots (free, malloc). Those are
+        # not in pltgot_relocations. Data objects stay out of the function list:
+        # only a stub that actually jumps at the slot is named, in `_plt`.
+        try:
+            rels = rels + [rel for rel in list(getattr(binary, "relocations", []) or [])
+                           if "GLOB_DAT" in str(getattr(rel, "type", ""))]
+        except Exception:
+            pass
     for rel in rels:
         sym = getattr(rel, "symbol", None)
         name = str(getattr(sym, "name", "") or "") if sym is not None else ""
         if name:
-            got[_va(binary, rel.address)] = name
+            got.setdefault(_va(binary, rel.address), name)
     return got
 
 
 def _plt(binary, sections):
     """Map x86-64 PLT stub addresses to import names via RIP-relative jumps into the GOT."""
-    got = _got_names(binary)
+    got = _got_names(binary, glob_dat=True)
     if not got:
         return {}
     from capstone import CS_ARCH_X86, CS_MODE_64, CS_OP_MEM, Cs
@@ -276,7 +328,7 @@ def _plt(binary, sections):
 
 def _plt_arm64(binary, sections):
     """Map AArch64 PLT stubs (adrp; ldr; add; br) to import names."""
-    got = _got_names(binary)
+    got = _got_names(binary, glob_dat=True)
     if not got:
         return {}
     from capstone import CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN, Cs
@@ -428,8 +480,32 @@ def _strings(sections):
                 j = i
                 while j < len(raw) and 32 <= raw[j] < 127:
                     j += 1
-                if 4 <= j - i <= 240 and j < len(raw) and raw[j] == 0:
+                if 2 <= j - i <= 240 and j < len(raw) and raw[j] == 0:
                     found.append((sec["va"] + i, raw[i:j].decode("ascii")))
+                    i = j + 1
+                    continue
+            i += 1
+    if len(found) >= MAX_STRINGS:
+        return found
+    # A C string may contain a newline or a tab. Collected after the plain
+    # scan so a binary that already hit the cap keeps the same strings.
+    for sec in sections:
+        name = sec["name"]
+        if sec["executable"] or not sec["raw"] or not sec["va"]:
+            continue
+        if name in _SKIP_STRINGS or name.startswith(".debug") or name.startswith(".note") or name.startswith(".gnu_debug"):
+            continue
+        raw = sec["raw"]
+        i = 0
+        while i < len(raw) and len(found) < MAX_STRINGS:
+            if raw[i] in (9, 10) or 32 <= raw[i] < 127:
+                j = i
+                while j < len(raw) and (raw[j] in (9, 10) or 32 <= raw[j] < 127):
+                    j += 1
+                body = raw[i:j]
+                if (2 <= len(body) <= 240 and j < len(raw) and raw[j] == 0
+                        and (9 in body or 10 in body)):
+                    found.append((sec["va"] + i, body.decode("ascii")))
                     i = j + 1
                     continue
             i += 1
@@ -585,6 +661,7 @@ def _flow(md, insns, arch, start, end):
     leaders = {start}
     edges = []
     direct_calls = []
+    tails = []
     indirect = 0
     resolved = []  # (kind, address or None, text target)
 
@@ -624,6 +701,9 @@ def _flow(md, insns, arch, start, end):
                 edges.append((insn.address, target, "jump"))
             else:
                 indirect += 1
+                # An unconditional branch off the end of this range is a tail call.
+                if target is not None and mnem in {"jmp", "b"}:
+                    tails.append(target)
             conditional = mnem not in {"jmp", "b", "br"}
             if conditional and nxt < end:
                 leaders.add(nxt)
@@ -656,7 +736,7 @@ def _flow(md, insns, arch, start, end):
             "cbz", "cbnz", "tbz", "tbnz"} or (mnem in {"pop", "ldm", "ldmia"} and "pc" in last.op_str)
         if not terminal and i + 1 < len(blocks) and blocks[i + 1]["address"] == nxt:
             edges.append((last.address, nxt, "fall"))
-    return {"blocks": len(blocks), "edges": len(edges), "calls": direct_calls, "indirect": indirect}
+    return {"blocks": len(blocks), "edges": len(edges), "calls": direct_calls, "tails": tails, "indirect": indirect}
 
 
 def _control(mnemonic):
@@ -723,12 +803,22 @@ def _lookup_string(strings, addr):
     return None
 
 
-def _disassemble(md, arch, func, sections, plt, strings, names, budget, lift_left):
-    raw = _bytes_at(sections, func["address"], func["size"])
-    if not raw:
+def _disassemble(md, arch, func, sections, plt, strings, names, budget, lift_left, convention):
+    # A GOT slot holds an address, not instructions. Ghidra still counts the import.
+    if func.get("origin") == "import" and func.get("name"):
         func.update({"instructions": 0, "blocks": 0, "cfg_edges": 0, "callees": [], "callee_count": 0,
                      "import_count": 0, "indirect_calls": 0, "string_xrefs": [], "string_xref_count": 0,
-                     "constant_xrefs": [], "constant_xref_count": 0, "assembly": [], "signature": None})
+                     "constant_xrefs": [], "constant_xref_count": 0, "assembly": [], "signature": None,
+                     "pseudocode": ["%s();" % func["name"]]})
+        return 0
+    raw = _bytes_at(sections, func["address"], func["size"])
+    if not raw:
+        name = func.get("name") or ""
+        pseudo = ["%s();" % name] if func.get("origin") == "import" and name else []
+        func.update({"instructions": 0, "blocks": 0, "cfg_edges": 0, "callees": [], "callee_count": 0,
+                     "import_count": 0, "indirect_calls": 0, "string_xrefs": [], "string_xref_count": 0,
+                     "constant_xrefs": [], "constant_xref_count": 0, "assembly": [], "signature": None,
+                     "pseudocode": pseudo})
         return 0
     insns = []
     for insn in md.disasm(raw, func["address"]):
@@ -759,11 +849,36 @@ def _disassemble(md, arch, func, sections, plt, strings, names, budget, lift_lef
             elif addr not in {insn.address, insn.address + insn.size} and not _in_exec(sections, addr):
                 constant_xrefs.append({"from": _hex(insn.address), "address": _hex(addr)})
     sig = _signature(md, insns, arch)
+    sig = usage_signature([item.get("name") or "" for item in callees], sig)
+    if sig.get("source") == "usage" and not func.get("name"):
+        func["name"] = "main"
     asm = ["%s: %s %s" % (_hex(insn.address), insn.mnemonic, insn.op_str) for insn in insns[:12]]
     pseudo = []
-    if lift_left[0] > 0 and insns:
-        pseudo = lift.lift(md, insns, arch)
-        if pseudo:
+    if insns and (lift_left is None or lift_left[0] > 0):
+        structured = None
+        if arch in {"x86-64", "arm64"}:
+            try:
+                label_at = dict(plt)
+                for addr, name in names.items():
+                    if name:
+                        label_at.setdefault(addr, name)
+                string_at = {}
+                for addr, text in strings:
+                    if text:
+                        string_at.setdefault(addr, text)
+                # A pointer into a string still names that string, not data_.
+                for addr, text in strings:
+                    if not text:
+                        continue
+                    for offset in range(1, len(text)):
+                        string_at.setdefault(addr + offset, text[offset:])
+                structured = decompile_function(
+                    md, insns, arch, names=label_at, strings=string_at, convention=convention,
+                    memory=lambda addr, n: _bytes_at(sections, addr, n))
+            except Exception:
+                structured = None
+        pseudo = structured if structured else lift.lift(md, insns, arch)
+        if pseudo and lift_left is not None:
             lift_left[0] -= 1
     func.update({"instructions": len(insns), "blocks": flow["blocks"], "cfg_edges": flow["edges"],
                  "callees": callees[:16], "callee_count": len(callees),
@@ -771,8 +886,165 @@ def _disassemble(md, arch, func, sections, plt, strings, names, budget, lift_lef
                  "indirect_calls": flow["indirect"],
                  "string_xrefs": string_xrefs[:8], "string_xref_count": len(string_xrefs),
                  "constant_xrefs": constant_xrefs[:8], "constant_xref_count": len(constant_xrefs),
-                 "signature": sig, "assembly": asm, "calls": flow["calls"], "pseudocode": pseudo})
+                 "signature": sig, "assembly": asm, "calls": flow["calls"], "tails": flow.get("tails") or [],
+                 "pseudocode": pseudo})
     return len(insns)
+
+
+def _stub_ranges(sections, arch):
+    """(.plt, .plt.sec, .plt.got, .init, .fini) as separate functions.
+
+    Stock Ghidra counts each import stub. The two PLT layouts on x86-64
+    (.plt and .plt.sec) are both real code, so both are kept.
+    """
+    found = []
+    for sec in sections:
+        if sec["name"] not in {".plt", ".plt.sec", ".plt.got", ".init", ".fini"} or not sec["raw"]:
+            continue
+        raw = bytes(sec["raw"])
+        base = sec["va"]
+        origin = "init" if sec["name"] in {".init", ".fini"} else "plt"
+        if sec["name"] in {".init", ".fini"}:
+            found.append((base, len(raw), origin))
+            continue
+        starts = []
+        if arch == "x86-64":
+            token = b"\xf3\x0f\x1e\xfa"
+            if not raw.startswith(token):
+                starts.append(0)
+            idx = 0
+            while True:
+                hit = raw.find(token, idx)
+                if hit < 0:
+                    break
+                starts.append(hit)
+                idx = hit + 4
+        elif arch == "arm64":
+            # Stubs are 16-byte aligned and start with adrp.
+            for off in range(0, len(raw) - 3, 16):
+                word = int.from_bytes(raw[off:off + 4], "little")
+                if (word & 0x9F000000) == 0x90000000:
+                    starts.append(off)
+        if not starts:
+            found.append((base, len(raw), origin))
+            continue
+        starts = sorted(set(starts))
+        for index, off in enumerate(starts):
+            nxt = starts[index + 1] if index + 1 < len(starts) else len(raw)
+            size = nxt - off
+            if size >= 4:
+                found.append((base + off, size, origin))
+    return found
+
+
+def _pointer_targets(binary, sections):
+    """Code addresses stored in init arrays and relative relocations.
+
+    A target inside a function we already have is a jump-table slot or a
+    mid-function label, not a new function. Only addresses in executable
+    gaps are returned.
+    """
+    import struct
+    targets = []
+    for sec in sections:
+        if sec["name"] not in {".init_array", ".fini_array", ".preinit_array"} or not sec["raw"]:
+            continue
+        raw = bytes(sec["raw"])
+        for off in range(0, len(raw) - 7, 8):
+            targets.append(struct.unpack_from("<Q", raw, off)[0])
+    try:
+        rels = list(getattr(binary, "relocations", []) or [])
+    except Exception:
+        rels = []
+    for rel in rels:
+        if "RELATIVE" not in str(getattr(rel, "type", "")):
+            continue
+        addend = int(getattr(rel, "addend", 0) or 0)
+        if addend:
+            targets.append(addend & 0xFFFFFFFFFFFFFFFF)
+    return targets
+
+
+def _gap_code(sections, kept, arch):
+    """Small uncovered executable spans whose first instruction is real code.
+
+    A one-instruction pad of nop or udf is not a function. Spans larger than
+    2 KiB are tails of a function we already entered, not a new one.
+    """
+    md = _cs(arch)
+    if md is None:
+        return []
+    found = []
+    for sec in sections:
+        if not sec["executable"] or not sec["raw"] or sec["name"] in {".plt", ".plt.sec", ".plt.got"}:
+            continue
+        raw = bytes(sec["raw"])
+        lo, hi = sec["va"], sec["va"] + len(raw)
+        covered = sorted((func["address"], func["address"] + func["size"]) for func in kept
+                         if lo <= func["address"] < hi)
+        cur = lo
+        gaps = []
+        for start, end in covered:
+            start, end = max(start, lo), min(end, hi)
+            if start > cur:
+                gaps.append((cur, start))
+            cur = max(cur, end)
+        if cur < hi:
+            gaps.append((cur, hi))
+        for gap_lo, gap_hi in gaps:
+            size = gap_hi - gap_lo
+            if size < 8 or size > 65536:
+                continue
+            off = gap_lo - lo
+            insns = list(md.disasm(raw[off:gap_hi - lo], gap_lo))
+            if not insns:
+                continue
+            starts = []
+            for index, insn in enumerate(insns):
+                if insn.mnemonic in {"nop", "udf", "int3"} or insn.mnemonic.startswith("nop"):
+                    continue
+                if not starts:
+                    starts.append(insn.address)
+                    continue
+                # Inside a large uncovered span, a ret ends a routine. The
+                # following instruction is not a block in a function we have.
+                if size > 2048 and index and insns[index - 1].mnemonic == "ret":
+                    starts.append(insn.address)
+            for index, addr in enumerate(starts):
+                nxt = starts[index + 1] if index + 1 < len(starts) else gap_hi
+                if nxt - addr >= 8:
+                    found.append((addr, nxt - addr))
+    return found
+
+
+def _endbr_gaps(sections, kept):
+    """CET function entries sitting in padding between known functions."""
+    token = b"\xf3\x0f\x1e\xfa"
+    found = []
+    for sec in sections:
+        if not sec["executable"] or not sec["raw"] or sec["name"] in {".plt", ".plt.sec", ".plt.got"}:
+            continue
+        raw = bytes(sec["raw"])
+        idx = 0
+        while True:
+            hit = raw.find(token, idx)
+            if hit < 0:
+                break
+            addr = sec["va"] + hit
+            if not any(func["address"] <= addr < func["address"] + func["size"] for func in kept):
+                found.append(addr)
+            idx = hit + 4
+    return found
+
+
+def _place(kept, addr, size, origin, name):
+    if addr in {func["address"] for func in kept}:
+        return False
+    if any(func["address"] <= addr < func["address"] + func["size"] for func in kept):
+        return False
+    kept.append({"address": addr, "size": size, "origin": origin, "name": name,
+                 "size_approximate": origin not in {"plt", "init", "import"}})
+    return True
 
 
 def _merge(funcs, addr, size, origin, name=""):
@@ -849,6 +1121,160 @@ def _apply_dwarf(func, record):
     _rewrite_dwarf_body(func)
 
 
+def _arm64_prologue(insn, raw, off, gap_start):
+    """A frame-building instruction that can start a function in an uncovered gap."""
+    mnem = insn.mnemonic
+    ops = insn.op_str
+    if mnem == "stp" and "x29" in ops and "x30" in ops:
+        return True
+    if mnem in {"paciasp", "pacibsp"}:
+        return True
+    if mnem == "str" and ops.startswith("x30,") and "[sp" in ops:
+        return True
+    if mnem == "sub" and ops.startswith("sp, sp"):
+        if insn.address == gap_start:
+            return True
+        if off < 4:
+            return False
+        word = int.from_bytes(raw[off - 4:off], "little")
+        # ret, nop, or udf. A stack adjustment after those is a new function.
+        return word in {0xD65F03C0, 0xD503201F, 0x00000000}
+    return False
+
+
+def _arm64_gap_prologues(sections, funcs, md):
+    """Function starts in executable gaps that .eh_frame did not describe.
+
+    Only arm64 frame prologues are accepted, and only outside ranges already
+    discovered. This does not invent a start in the middle of a known function.
+    """
+    covered = sorted((func["address"], func["address"] + func["size"]) for func in funcs)
+    found = []
+    for sec in sections:
+        if not sec["executable"] or not sec["raw"] or sec["name"] in {".plt", ".init", ".fini"}:
+            continue
+        lo = sec["va"]
+        hi = sec["va"] + len(sec["raw"])
+        raw = sec["raw"]
+        gaps = []
+        cur = lo
+        for start, end in covered:
+            if end <= lo or start >= hi:
+                continue
+            start = max(start, lo)
+            end = min(end, hi)
+            if start > cur:
+                gaps.append((cur, start))
+            cur = max(cur, end)
+        if cur < hi:
+            gaps.append((cur, hi))
+        for gap_lo, gap_hi in gaps:
+            if gap_hi - gap_lo < 8:
+                continue
+            starts = []
+            addr = gap_lo if gap_lo % 4 == 0 else gap_lo + (4 - gap_lo % 4)
+            off = addr - lo
+            limit = gap_hi - lo
+            while off + 4 <= limit:
+                decoded = list(md.disasm(raw[off:off + 4], addr))
+                if decoded and _arm64_prologue(decoded[0], raw, off, gap_lo):
+                    starts.append(addr)
+                off += 4
+                addr += 4
+            for index, start in enumerate(starts):
+                nxt = starts[index + 1] if index + 1 < len(starts) else gap_hi
+                size = min(nxt, gap_hi) - start
+                if size > 65536:
+                    size = 65536
+                if size >= 8:
+                    found.append((start, size))
+    return found
+
+
+_BOUNDARY_ORIGIN = {"prologue", "gap", "entry", "symbol", "call-target"}
+
+
+def _direct_branch_target(insn, lo, hi):
+    """Immediate target of a direct branch or call that lands inside [lo, hi)."""
+    mnem = insn.mnemonic
+    if mnem in {"ret", "retn", "br", "blr"} or mnem.startswith("nop"):
+        return None
+    branched = (mnem in {"b", "bl", "jmp", "call", "cbz", "cbnz", "tbz", "tbnz"}
+                or mnem.startswith("b.") or (mnem.startswith("j") and mnem != "jmp"))
+    if not branched:
+        return None
+    for op in reversed(list(insn.operands)):
+        if op.type == 2 and lo <= int(op.imm) < hi:
+            return int(op.imm)
+    return None
+
+
+def _split_boundaries(sections, kept, arch):
+    """Split an approximate function at code that follows ret or udf padding.
+
+    eh_frame sizes stay whole. A prologue or gap scan can run into the next
+    routine when that routine has no frame prologue. A cut that an earlier
+    instruction in the same range branches to is still that function. A range
+    with many cuts is left whole: that shape is a jump table, not padding.
+    """
+    md = _cs(arch)
+    if md is None:
+        return
+    added = []
+    for func in kept:
+        if func.get("origin") not in _BOUNDARY_ORIGIN or func["size"] < 16:
+            continue
+        raw = _bytes_at(sections, func["address"], func["size"])
+        if len(raw) < 16:
+            continue
+        insns = list(md.disasm(raw, func["address"]))
+        if len(insns) < 4:
+            continue
+        end = func["address"] + func["size"]
+        targets = []
+        for insn in insns:
+            target = _direct_branch_target(insn, func["address"], end)
+            if target is not None:
+                targets.append((insn.address, target))
+        cuts = []
+        stopped = False
+        for insn in insns:
+            mnem = insn.mnemonic
+            if mnem in {"ret", "retn", "udf", "int3"}:
+                stopped = True
+                continue
+            if mnem == "nop" or mnem.startswith("nop"):
+                continue
+            if stopped and insn.address != func["address"]:
+                if any(src < insn.address and dst == insn.address for src, dst in targets):
+                    stopped = False
+                    continue
+                cuts.append(insn.address)
+            stopped = False
+        if not cuts or len(cuts) > 8:
+            continue
+        points = [func["address"]]
+        for cut in cuts:
+            if cut - points[-1] >= 4 and end - cut >= 4:
+                points.append(cut)
+        if len(points) < 2:
+            continue
+        points.append(end)
+        func["size"] = points[1] - points[0]
+        for index in range(1, len(points) - 1):
+            added.append({"address": points[index], "size": points[index + 1] - points[index],
+                          "origin": "boundary", "name": "", "size_approximate": True})
+    if added:
+        known = {func["address"] for func in kept}
+        for func in added:
+            if func["address"] in known:
+                continue
+            if any(other["address"] < func["address"] < other["address"] + other["size"] for other in kept):
+                continue
+            kept.append(func)
+            known.add(func["address"])
+
+
 def _one(binary, path=None):
     arch = _arch(binary)
     sections = _sections(binary)
@@ -884,6 +1310,59 @@ def _one(binary, path=None):
     # Drop empty and absurd ranges.
     kept = [f for f in funcs.values() if f["size"] > 0 and f["size"] < 1_000_000]
     kept.sort(key=lambda f: f["address"])
+    if arch == "arm64":
+        scanner = _cs(arch)
+        if scanner is not None:
+            known = {func["address"] for func in kept}
+            for addr, size in _arm64_gap_prologues(sections, kept, scanner):
+                if addr in known:
+                    continue
+                if any(func["address"] <= addr < func["address"] + func["size"] for func in kept):
+                    continue
+                kept.append({"address": addr, "size": size, "origin": "prologue", "name": names.get(addr, ""),
+                             "size_approximate": True})
+                known.add(addr)
+            kept.sort(key=lambda f: f["address"])
+    # eh_frame often records a whole PLT section as one function. Ghidra counts
+    # each stub, and so do we. Drop the section-sized frame, then add the stubs.
+    plt_spans = [(sec["va"], sec["va"] + len(sec["raw"])) for sec in sections
+                 if sec["name"] in {".plt", ".plt.sec", ".plt.got"} and sec["raw"]]
+    kept = [func for func in kept
+            if not any(start <= func["address"] and func["address"] + func["size"] <= end
+                       for start, end in plt_spans)]
+    for addr, size, origin in _stub_ranges(sections, arch):
+        _place(kept, addr, size, origin, names.get(addr, ""))
+    if arch == "x86-64":
+        for addr in _endbr_gaps(sections, kept):
+            _place(kept, addr, 16, "endbr", names.get(addr, ""))
+    exec_ranges = [(sec["va"], sec["va"] + len(sec["raw"])) for sec in sections if sec["executable"] and sec["raw"]]
+    for addr in _pointer_targets(binary, sections):
+        if any(start <= addr < end for start, end in exec_ranges):
+            _place(kept, addr, 16, "pointer", names.get(addr, ""))
+    for addr, name in _got_names(binary).items():
+        if name:
+            _place(kept, addr, 8, "import", name)
+    # A GLOB_DAT slot for a function symbol is the same kind of import as a
+    # JUMP_SLOT. Object relocations (vtables, stdout) stay data.
+    for addr, name in _function_glob_dat(binary).items():
+        if name:
+            _place(kept, addr, 8, "import", name)
+    kept.sort(key=lambda f: f["address"])
+    for index, func in enumerate(kept):
+        if not func.get("size_approximate"):
+            continue
+        nxt = kept[index + 1]["address"] if index + 1 < len(kept) else func["address"] + func["size"]
+        span = nxt - func["address"]
+        if 0 < span <= 4096:
+            func["size"] = span
+    for addr, size in _gap_code(sections, kept, arch):
+        _place(kept, addr, size, "gap", names.get(addr, ""))
+    kept.sort(key=lambda f: f["address"])
+    _split_boundaries(sections, kept, arch)
+    for func in kept:
+        if func.get("origin") == "boundary" and not func.get("name"):
+            func["name"] = names.get(func["address"], "")
+    kept.sort(key=lambda f: f["address"])
     discovered_count = len(kept)
     if len(kept) > MAX_FUNCTIONS:
         kept = kept[:MAX_FUNCTIONS]
@@ -903,8 +1382,16 @@ def _one(binary, path=None):
         except Exception as err:
             plt = {}
             limitations.append("Import names were not recovered: " + str(err)[:180])
+        for func in kept:
+            if func.get("origin") == "plt" and not func.get("name"):
+                func["name"] = plt.get(func["address"], "")
+        for addr, name in _got_names(binary).items():
+            if name:
+                names.setdefault(addr, name)
     budget = [0]
-    lift_left = [50]
+    lift_left = None
+    convention = convention_for(arch, binary.format)
+    decompile_started = time.perf_counter()
     call_edges = 0
     import_edges = 0
     indirect = 0
@@ -920,7 +1407,7 @@ def _one(binary, path=None):
             if budget[0] >= MAX_INSNS:
                 limitations.append("Instruction budget reached; later functions were not disassembled.")
                 break
-            _disassemble(md, arch, func, sections, plt, strings, names, budget, lift_left)
+            _disassemble(md, arch, func, sections, plt, strings, names, budget, lift_left, convention)
             disasm_funcs += 1
             blocks += func["blocks"]
             cfg_edges += func["cfg_edges"]
@@ -929,11 +1416,11 @@ def _one(binary, path=None):
             constant_xrefs += func["constant_xref_count"]
             call_edges += func.get("callee_count", 0)
             import_edges += func.get("import_count", 0)
-            for callee in func["callees"]:
-                if callee["kind"] == "direct" and callee.get("address"):
-                    addr = int(callee["address"], 16)
-                    if addr not in funcs and len(discovered) < MAX_NEW_FUNCS:
-                        discovered.append(addr)
+            for raw in list(func.get("calls") or []) + list(func.get("tails") or []):
+                if not isinstance(raw, int) or raw in funcs:
+                    continue
+                if raw not in discovered and len(discovered) < MAX_NEW_FUNCS:
+                    discovered.append(raw)
             if func["address"] == entry:
                 entry_asm = func["assembly"]
         if not entry_asm and entry:
@@ -951,8 +1438,12 @@ def _one(binary, path=None):
                 continue
             if any(f["address"] <= addr < f["address"] + f["size"] for f in kept):
                 continue
-            func = {"address": addr, "size": 256, "origin": "call-target", "name": names.get(addr, ""), "size_approximate": True}
-            _disassemble(md, arch, func, sections, plt, strings, names, budget, lift_left)
+            later = [item["address"] for item in kept if item["address"] > addr]
+            pending = [item for item in discovered if isinstance(item, int) and item > addr]
+            cap = min(later + pending + [addr + 256])
+            func = {"address": addr, "size": max(4, cap - addr), "origin": "call-target",
+                    "name": names.get(addr, ""), "size_approximate": True}
+            _disassemble(md, arch, func, sections, plt, strings, names, budget, lift_left, convention)
             kept.append(func)
             known.add(addr)
             disasm_funcs += 1
@@ -1013,9 +1504,10 @@ def _one(binary, path=None):
         public.append(item)
     named = sum(1 for f in public if not f["name"].startswith("sub_"))
     lifted = [item for item in public if item.get("pseudocode")]
-    branched = [item for item in lifted if any(line.startswith("if (") for line in item["pseudocode"])]
-    control = [item for item in lifted if any(line.startswith("if (") or line.startswith("goto ") for line in item["pseudocode"])]
-    sample = (branched or control or lifted or [None])[0]
+    branched = [item for item in lifted if any(line.startswith("if (") or line.startswith("while (") or line.startswith("switch (") for line in item["pseudocode"])]
+    control = [item for item in lifted if any(line.startswith(("if (", "while (", "switch (", "goto ")) for line in item["pseudocode"])]
+    called = [item for item in lifted if any("getopt" in (c.get("name") or "") for c in item.get("callees") or [])]
+    sample = (called or branched or control or lifted or [None])[0]
     return {"kind": "native-binary", "format": str(binary.format).split(".")[-1], "arch": arch,
             "imagebase": _hex(_imagebase(binary)), "entrypoint": _hex(entry) if entry else None, "entry_assembly": entry_asm,
             "sections": [{"name": s["name"], "va": _hex(s["va"]), "size": s["size"], "executable": s["executable"]} for s in sections],
@@ -1029,12 +1521,13 @@ def _one(binary, path=None):
             "xrefs": {"strings": string_xrefs, "constants": constant_xrefs},
             "decompiler": {"lifted": len(lifted), "with_control_flow": len(control),
                            "sample_name": sample["name"] if sample else "",
-                           "sample": sample["pseudocode"] if sample else []},
+                           "sample": sample["pseudocode"] if sample else [],
+                           "seconds": round(time.perf_counter() - decompile_started, 4)},
             "dwarf": dwarf_report, "codeview": codeview, "pdb": pdb_report,
             "instructions": budget[0],
             "functions_detail": public,
             "limitations": limitations + [
-                "C-like pseudocode is a structural lift of registers, stack slots and branches. DWARF parameter names are substituted into that lift when they are known. It is not a decompiler of Ghidra's depth.",
+                "Pseudocode is the owned decompiler on x86-64 and arm64: calls, if/while/switch, and names from DWARF or import prototypes. Other architectures stay on the structural lift.",
                 "Register signatures are inferred unless DWARF names them. x86-32 cdecl arguments stay on the stack.",
                 "The file was not executed.",
             ]}

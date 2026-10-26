@@ -5,8 +5,10 @@ import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import ghidra.app.decompiler.DecompInterface;
@@ -28,6 +30,8 @@ import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.FunctionIterator;
 import ghidra.program.model.listing.FunctionManager;
 import ghidra.program.model.listing.Parameter;
+import ghidra.program.model.listing.ParameterImpl;
+import ghidra.program.model.listing.Variable;
 import ghidra.program.model.symbol.SourceType;
 
 public class LostwaxDecompile extends GhidraScript {
@@ -43,6 +47,7 @@ public class LostwaxDecompile extends GhidraScript {
 	private final List<long[]> returns = new ArrayList<long[]>();
 	private final List<String> returnTypes = new ArrayList<String>();
 	private final List<Long> hints = new ArrayList<Long>();
+	private final List<String[]> externs = new ArrayList<String[]>();
 
 	@Override
 	public void run() throws Exception {
@@ -54,92 +59,51 @@ public class LostwaxDecompile extends GhidraScript {
 			throw new IllegalArgumentException("LostwaxDecompile config has no out path.");
 		}
 		long imageBase = currentProgram.getImageBase().getOffset();
-		int namesApplied = 0;
-		int paramsApplied = 0;
-		int tx = currentProgram.startTransaction("lostwax-names");
-		boolean committed = false;
-		try {
-			for (int i = 0; i < names.size(); i++) {
-				Function function = functionAt(names.get(i)[0], sourceBase, imageBase);
-				if (function == null || function.isExternal()) {
-					continue;
-				}
-				try {
-					function.setName(nameText.get(i), SourceType.USER_DEFINED);
-					namesApplied++;
-				} catch (Exception ignored) {
-					// A duplicate or rejected name leaves the existing Ghidra name in place.
-				}
-			}
-			for (int i = 0; i < params.size(); i++) {
-				Function function = functionAt(params.get(i)[0], sourceBase, imageBase);
-				if (function == null || function.isExternal()) {
-					continue;
-				}
-				int index = (int) params.get(i)[1];
-				if (index < 0 || index >= function.getParameterCount()) {
-					continue;
-				}
-				Parameter parameter = function.getParameter(index);
-				DataType type = resolveType(paramTypes.get(i));
-				try {
-					parameter.setName(paramNames.get(i), SourceType.USER_DEFINED);
-					if (type != null) {
-						parameter.setDataType(type, SourceType.USER_DEFINED);
-					}
-					paramsApplied++;
-				} catch (Exception ignored) {
-					// Keep Ghidra's recovered parameter when the supplied type does not fit.
-				}
-			}
-			for (int i = 0; i < returns.size(); i++) {
-				Function function = functionAt(returns.get(i)[0], sourceBase, imageBase);
-				DataType type = resolveType(returnTypes.get(i));
-				if (function == null || function.isExternal() || type == null) {
-					continue;
-				}
-				try {
-					function.setReturnType(type, SourceType.USER_DEFINED);
-				} catch (Exception ignored) {
-					// The decompiler keeps its own return type.
-				}
-			}
-			committed = true;
-		} finally {
-			currentProgram.endTransaction(tx, committed);
-		}
+		int namesApplied = applyNames(imageBase);
+		int paramsApplied = applyParams(imageBase) + applyExterns();
+		applyReturns(imageBase);
 
 		Set<Function> chosen = new LinkedHashSet<Function>();
 		FunctionManager manager = currentProgram.getFunctionManager();
-		Address entryPoint = null;
-		AddressIterator entries = currentProgram.getSymbolTable().getExternalEntryPointIterator();
-		if (entries.hasNext()) {
-			entryPoint = entries.next();
-		}
-		if (entryPoint != null) {
-			Function entry = manager.getFunctionAt(entryPoint);
-			if (entry == null) {
-				entry = getFunctionContaining(entryPoint);
+		if (limit <= 0) {
+			FunctionIterator every = manager.getFunctions(true);
+			while (every.hasNext()) {
+				Function function = every.next();
+				if (!function.isExternal()) {
+					chosen.add(function);
+				}
 			}
-			if (entry != null && !entry.isExternal()) {
-				chosen.add(entry);
+		} else {
+			Address entryPoint = null;
+			AddressIterator entries = currentProgram.getSymbolTable().getExternalEntryPointIterator();
+			if (entries.hasNext()) {
+				entryPoint = entries.next();
 			}
-		}
-		for (Long hint : hints) {
-			if (chosen.size() >= limit) {
-				break;
+			if (entryPoint != null) {
+				Function entry = manager.getFunctionAt(entryPoint);
+				if (entry == null) {
+					entry = getFunctionContaining(entryPoint);
+				}
+				if (entry != null && !entry.isExternal()) {
+					chosen.add(entry);
+				}
 			}
-			Function function = functionAt(hint.longValue(), sourceBase, imageBase);
-			if (function != null && !function.isExternal()) {
-				chosen.add(function);
+			for (Long hint : hints) {
+				if (chosen.size() >= limit) {
+					break;
+				}
+				Function function = functionAt(hint.longValue(), sourceBase, imageBase);
+				if (function != null && !function.isExternal()) {
+					chosen.add(function);
+				}
 			}
-		}
-		FunctionIterator named = manager.getFunctions(true);
-		while (named.hasNext() && chosen.size() < limit) {
-			Function function = named.next();
-			String label = function.getName();
-			if ("main".equals(label) || "add".equals(label) || "entry".equals(label) || "_start".equals(label)) {
-				chosen.add(function);
+			FunctionIterator named = manager.getFunctions(true);
+			while (named.hasNext() && chosen.size() < limit) {
+				Function function = named.next();
+				String label = function.getName();
+				if ("main".equals(label) || "add".equals(label) || "entry".equals(label) || "_start".equals(label)) {
+					chosen.add(function);
+				}
 			}
 		}
 
@@ -239,8 +203,228 @@ public class LostwaxDecompile extends GhidraScript {
 				returnTypes.add(parts[2]);
 			} else if ("hint".equals(kind) && parts.length >= 2) {
 				hints.add(Long.parseUnsignedLong(parts[1], 16));
+			} else if ("extern".equals(kind) && parts.length >= 3) {
+				String[] row = new String[parts.length - 1];
+				System.arraycopy(parts, 1, row, 0, row.length);
+				externs.add(row);
 			}
 		}
+	}
+
+	private int applyNames(long imageBase) throws Exception {
+		int applied = 0;
+		int tx = currentProgram.startTransaction("lostwax-names");
+		boolean committed = false;
+		try {
+			for (int i = 0; i < names.size(); i++) {
+				Function function = functionAt(names.get(i)[0], sourceBase, imageBase);
+				if (function == null) {
+					continue;
+				}
+				try {
+					function.setName(nameText.get(i), SourceType.USER_DEFINED);
+					applied++;
+				} catch (Exception ignored) {
+					// A duplicate or rejected name leaves the existing Ghidra name in place.
+				}
+			}
+			committed = true;
+		} finally {
+			currentProgram.endTransaction(tx, committed);
+		}
+		return applied;
+	}
+
+	private int applyParams(long imageBase) throws Exception {
+		Map<Long, List<Integer>> grouped = new LinkedHashMap<Long, List<Integer>>();
+		for (int i = 0; i < params.size(); i++) {
+			Long addr = Long.valueOf(params.get(i)[0]);
+			List<Integer> rows = grouped.get(addr);
+			if (rows == null) {
+				rows = new ArrayList<Integer>();
+				grouped.put(addr, rows);
+			}
+			rows.add(Integer.valueOf(i));
+		}
+		int applied = 0;
+		int tx = currentProgram.startTransaction("lostwax-params");
+		boolean committed = false;
+		try {
+			for (Map.Entry<Long, List<Integer>> entry : grouped.entrySet()) {
+				Function function = functionAt(entry.getKey().longValue(), sourceBase, imageBase);
+				if (function == null) {
+					continue;
+				}
+				applied += writeParams(function, entry.getValue());
+			}
+			committed = true;
+		} finally {
+			currentProgram.endTransaction(tx, committed);
+		}
+		return applied;
+	}
+
+	private int writeParams(Function function, List<Integer> rows) {
+		int max = -1;
+		boolean[] present = new boolean[64];
+		for (Integer rowObj : rows) {
+			int index = (int) params.get(rowObj.intValue())[1];
+			if (index < 0 || index >= present.length) {
+				return 0;
+			}
+			present[index] = true;
+			if (index > max) {
+				max = index;
+			}
+		}
+		boolean dense = max >= 0;
+		for (int i = 0; dense && i <= max; i++) {
+			dense = present[i];
+		}
+		if (!dense) {
+			return 0;
+		}
+		if (function.getParameterCount() == max + 1) {
+			int applied = 0;
+			for (Integer rowObj : rows) {
+				int row = rowObj.intValue();
+				int index = (int) params.get(row)[1];
+				Parameter parameter = function.getParameter(index);
+				DataType type = resolveType(paramTypes.get(row));
+				try {
+					parameter.setName(paramNames.get(row), SourceType.USER_DEFINED);
+					applied++;
+					if (type != null) {
+						parameter.setDataType(type, SourceType.USER_DEFINED);
+					}
+				} catch (Exception ignored) {
+					// Keep Ghidra's storage when the supplied type does not fit.
+				}
+			}
+			return applied;
+		}
+		return replaceParams(function, rows, max) ? max + 1 : 0;
+	}
+
+	private boolean replaceParams(Function function, List<Integer> rows, int max) {
+		try {
+			Variable[] vars = new Variable[max + 1];
+			for (Integer rowObj : rows) {
+				int row = rowObj.intValue();
+				int index = (int) params.get(row)[1];
+				DataType type = resolveType(paramTypes.get(row));
+				if (type == null) {
+					type = IntegerDataType.dataType;
+				}
+				vars[index] = new ParameterImpl(paramNames.get(row), type, currentProgram, SourceType.USER_DEFINED);
+			}
+			for (int i = 0; i < vars.length; i++) {
+				if (vars[i] == null) {
+					return false;
+				}
+			}
+			function.replaceParameters(Function.FunctionUpdateType.DYNAMIC_STORAGE_ALL_PARAMS, true,
+					SourceType.USER_DEFINED, vars);
+			return true;
+		} catch (Exception ignored) {
+			return false;
+		}
+	}
+
+	private int applyExterns() throws Exception {
+		int applied = 0;
+		int tx = currentProgram.startTransaction("lostwax-externs");
+		boolean committed = false;
+		try {
+			FunctionIterator functions = currentProgram.getFunctionManager().getExternalFunctions();
+			List<Function> externals = new ArrayList<Function>();
+			while (functions.hasNext()) {
+				externals.add(functions.next());
+			}
+			for (String[] row : externs) {
+				String name = row[0];
+				DataType ret = resolveType(row[1]);
+				List<String> types = new ArrayList<String>();
+				List<String> pnames = new ArrayList<String>();
+				for (int i = 2; i < row.length; i++) {
+					int bar = row[i].lastIndexOf('|');
+					if (bar <= 0) {
+						continue;
+					}
+					String typ = row[i].substring(0, bar).trim();
+					String pname = row[i].substring(bar + 1).trim();
+					if (typ.isEmpty() || pname.isEmpty() || "...".equals(typ)) {
+						continue;
+					}
+					types.add(typ);
+					pnames.add(pname);
+				}
+				for (Function function : externals) {
+					if (!sameImport(function.getName(), name)) {
+						continue;
+					}
+					if (ret != null) {
+						try {
+							function.setReturnType(ret, SourceType.USER_DEFINED);
+						} catch (Exception ignored) {
+							// The call still uses the parameter names when the return type is refused.
+						}
+					}
+					if (function.getParameterCount() == pnames.size()) {
+						for (int i = 0; i < pnames.size(); i++) {
+							DataType type = resolveType(types.get(i));
+							try {
+								function.getParameter(i).setName(pnames.get(i), SourceType.USER_DEFINED);
+								applied++;
+								if (type != null) {
+									function.getParameter(i).setDataType(type, SourceType.USER_DEFINED);
+								}
+							} catch (Exception ignored) {
+								// Leave the recovered external parameter.
+							}
+						}
+					}
+				}
+			}
+			committed = true;
+		} finally {
+			currentProgram.endTransaction(tx, committed);
+		}
+		return applied;
+	}
+
+	private void applyReturns(long imageBase) throws Exception {
+		int tx = currentProgram.startTransaction("lostwax-returns");
+		boolean committed = false;
+		try {
+			for (int i = 0; i < returns.size(); i++) {
+				Function function = functionAt(returns.get(i)[0], sourceBase, imageBase);
+				DataType type = resolveType(returnTypes.get(i));
+				if (function == null || type == null) {
+					continue;
+				}
+				try {
+					function.setReturnType(type, SourceType.USER_DEFINED);
+				} catch (Exception ignored) {
+					// The decompiler keeps its own return type.
+				}
+			}
+			committed = true;
+		} finally {
+			currentProgram.endTransaction(tx, committed);
+		}
+	}
+
+	private static boolean sameImport(String symbol, String catalog) {
+		String name = symbol == null ? "" : symbol;
+		int at = name.indexOf('@');
+		if (at > 0) {
+			name = name.substring(0, at);
+		}
+		if (name.equals(catalog)) {
+			return true;
+		}
+		return name.startsWith("_") && name.substring(1).equals(catalog);
 	}
 
 	private Function functionAt(long source, long base, long imageBase) {
