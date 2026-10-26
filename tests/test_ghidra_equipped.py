@@ -19,7 +19,7 @@ from rea_bot.native.runtime import imports
 class OwnedZipModes(unittest.TestCase):
     def test_trusted_file_modes_restore_exec_without_privilege_bits(self):
         with tempfile.TemporaryDirectory(prefix='owned-zip-modes-') as folder:
-            folder = Path(folder)
+            folder = Path(folder).resolve()
             archive = folder / 'owned.zip'
             destination = folder / 'install'
             top = 'ghidra_12.1.4_PUBLIC/'
@@ -71,7 +71,7 @@ class OwnedGhidraEquipped(unittest.TestCase):
         actual_capture = runner._capture_command
         observations = []
         with tempfile.TemporaryDirectory(prefix='owned-ghidra-fixture-') as folder:
-            folder = Path(folder)
+            folder = Path(folder).resolve()
             marker = folder / 'target-was-executed'
             source = folder / 'owned.c'
             source.write_text('#include <stdio.h>\n'

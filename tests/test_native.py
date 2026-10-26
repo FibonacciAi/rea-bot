@@ -125,6 +125,8 @@ class Parsers(unittest.TestCase):
     def test_nsis_and_msi_when_tools_exist(self):
         if not imports().get("olefile"):
             self.skipTest("olefile wheel not installed")
+        if not all(shutil.which(tool) for tool in ("makensis", "msibuild", "gcab")):
+            self.skipTest("makensis, msibuild or gcab is not installed")
         nsis = subprocess.run(["makensis", "-VERSION"], capture_output=True, text=True)
         msibuild = subprocess.run(["msibuild"], capture_output=True, text=True)
         gcab = subprocess.run(["gcab", "--version"], capture_output=True, text=True)
@@ -177,6 +179,7 @@ class Parsers(unittest.TestCase):
 
 @unittest.skipUnless(_wheels(), "capstone and lief wheels not installed")
 class Binaries(TempHome):
+    @unittest.skipUnless(sys.platform.startswith("linux"), "needs the Linux x86-64 ELF /bin/ls")
     def test_bin_ls_disassembly(self):
         from rea_bot.native.binary import analyze_binary
         report = analyze_binary("/bin/ls")
@@ -233,6 +236,7 @@ class Binaries(TempHome):
         self.assertIn("hi\nthere", texts)
         self.assertIn("plain", texts)
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "needs a gcc that emits Linux ELF")
     def test_compiled_signature_and_call(self):
         from rea_bot.native.binary import analyze_binary
         compiler = "gcc"
@@ -302,6 +306,7 @@ class Binaries(TempHome):
             self.assertTrue(any(c.get("name") == "add" for c in by_name["use"]["callees"]))
             self.assertIn("return", "\n".join(by_name["add"].get("pseudocode") or []))
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "needs a gcc that emits Linux ELF with DWARF")
     def test_dwarf_parameter_names(self):
         if not imports().get("pyelftools"):
             self.skipTest("pyelftools wheel not installed")

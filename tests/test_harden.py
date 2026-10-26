@@ -16,6 +16,9 @@ class Caps(unittest.TestCase):
 class Malformed(unittest.TestCase):
     def test_truncated_and_random_bytes_do_not_crash(self):
         from rea_bot.native.binary import analyze_binary
+        from rea_bot.native.runtime import imports
+        if not imports().get("lief"):
+            self.skipTest("optional LIEF wheel is not installed")
         samples = [
             b"",
             b"\x7fELF",

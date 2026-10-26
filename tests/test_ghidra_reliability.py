@@ -21,7 +21,7 @@ class GhidraReliability(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="owned-ghidra-test-")
         self.addCleanup(self.temp.cleanup)
-        self.base = Path(self.temp.name)
+        self.base = Path(self.temp.name).resolve()
         self.home = self.base / "home"
         self.root = self.home / "ghidra_12.1.4_PUBLIC"
         self.properties = b"application.version=12.1.4\n"
@@ -213,6 +213,8 @@ class GhidraReliability(unittest.TestCase):
         home = backend._java_home()
         if home is None:
             self.skipTest("pre-existing Java is unavailable")
+        if sys.platform == "darwin" and Path(home) == Path("/usr"):
+            self.skipTest("macOS /usr/bin/java is a launcher stub; set JAVA_HOME to a JDK")
         tmp_home = self.base / "java home with spaces"
         tmp_home.mkdir()
         proc = runner._capture_command([str(Path(home) / "bin/java"), "-XshowSettings:properties", "-version"],
@@ -237,7 +239,7 @@ class GhidraReliability(unittest.TestCase):
             self.assertNotIn(key, env)
         self.assertEqual(env["JAVA_TOOL_OPTIONS"], '-Duser.home="' + env["HOME"] + '"')
         self.assertEqual(env["JAVA_HOME"], "/owned-java")
-        self.assertEqual(env["HOME"], str(Path(seen["cwd"]) / "home"))
+        self.assertEqual(Path(env["HOME"]).resolve(), Path(seen["cwd"]).resolve() / "home")
         self.assertEqual(seen["args"][seen["args"].index("-import") + 1], str(target))
         self.assertIn("-log", seen["args"])
         self.assertFalse(Path(env["HOME"]).exists())

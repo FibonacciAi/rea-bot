@@ -59,7 +59,8 @@ class Similarity(unittest.TestCase):
         self.assertLess(score["score"], 1.0)
 
 
-@unittest.skipUnless(HAS_DECODERS and shutil.which("gcc"), "optional Capstone/LIEF or gcc is not installed")
+@unittest.skipUnless(HAS_DECODERS and shutil.which("gcc") and sys.platform.startswith("linux"),
+                     "optional Capstone/LIEF or gcc is not installed, or gcc does not emit Linux ELF objects")
 class StructuredX64(unittest.TestCase):
     def test_add_if_and_while(self):
         self._check("x86-64", ["gcc", "-O0", "-c", "-fno-asynchronous-unwind-tables", "-fno-inline"])
@@ -97,7 +98,10 @@ class StructuredX64(unittest.TestCase):
             compiler = shutil.which('gcc') or shutil.which('clang')
             model_source = Path(tmp) / 'models.c'
             declarations = {'add': 'int add(int left,int right)', 'pick': 'int pick(int cond,int a,int b)', 'dec': 'int dec(int n)'}
-            model_source.write_text('#include <stdint.h>\n' + '\n'.join(declarations[name] + '{\n' + rendered[name] + '\n}' for name in declarations))
+            # The sketch may start with its own "void fn(...)" header; the declaration above replaces it.
+            bodies = {name: '\n'.join(line for line in rendered[name].splitlines()
+                                      if not re.match(r'^(void fn|int main)\(', line)) for name in declarations}
+            model_source.write_text('#include <stdint.h>\n' + '\n'.join(declarations[name] + '{\n' + bodies[name] + '\n}' for name in declarations))
             original, models = Path(tmp) / 'original.so', Path(tmp) / 'models.so'
             for source, output in [(src, original), (model_source, models)]:
                 built = subprocess.run([compiler, '-shared', '-fPIC', '-O0', '-o', str(output), str(source)],
@@ -186,7 +190,8 @@ class GhidraOracle(unittest.TestCase):
                     'text_metric': score, 'scope': '25 finite in-range owned integer cases; no arbitrary-equivalence claim.'}, indent=2) + '\n')
 
 
-@unittest.skipUnless(HAS_DECODERS and shutil.which("gcc"), "optional Capstone/LIEF or gcc is not installed")
+@unittest.skipUnless(HAS_DECODERS and shutil.which("gcc") and sys.platform.startswith("linux"),
+                     "optional Capstone/LIEF or gcc is not installed, or gcc does not emit Linux ELF objects")
 class CallsAndSwitch(unittest.TestCase):
     def test_getopt_loop_names_argc_and_argv(self):
         source = (
