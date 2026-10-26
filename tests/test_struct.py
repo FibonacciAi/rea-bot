@@ -110,16 +110,18 @@ class SwitchRegion(unittest.TestCase):
 
 
 class Irreducible(unittest.TestCase):
-    def test_cross_edge_stays_a_goto(self):
+    def test_cross_edge_is_a_condition(self):
         text = _text([
             {"start": 0, "kind": "if", "cond": "c", "succs": [1, 2], "stmts": []},
             {"start": 1, "kind": "if", "cond": "a", "succs": [2, 3], "stmts": []},
             {"start": 2, "kind": "if", "cond": "b", "succs": [1, 3], "stmts": []},
             {"start": 3, "kind": "ret", "succs": [], "stmts": ["return 0;"]},
         ])
-        self.assertIn("goto", text)
+        self.assertNotIn("goto", text)
         self.assertIn("return 0;", text)
-        self.assertIn("loc_", text)
+        self.assertIn("a", text)
+        self.assertIn("b", text)
+        self.assertIn("c", text)
 
 
 class CountedLoops(unittest.TestCase):
