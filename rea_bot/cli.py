@@ -32,6 +32,16 @@ def main(argv=None):
     a = sub.add_parser('recheck'); a.add_argument('run'); a.add_argument('--rerun', action='store_true')
     a = sub.add_parser('report'); a.add_argument('run')
     a = sub.add_parser('certify'); a.add_argument('run')
+    a = sub.add_parser('analyze', help='Native engine, optionally headless Ghidra. Does not execute the target.')
+    a.add_argument('run')
+    a.add_argument('--decompiler', choices=('ghidra', 'native', 'auto'), default='auto',
+                   help='auto uses pinned Ghidra 12.1.4 when it is verified, otherwise the native lift')
+    n = sub.add_parser('native').add_subparsers(dest='ncmd', required=True)
+    n.add_parser('status')
+    x = n.add_parser('setup'); x.add_argument('--apply', action='store_true'); x.add_argument('--approve-source')
+    g = sub.add_parser('ghidra').add_subparsers(dest='gcmd', required=True)
+    g.add_parser('status')
+    x = g.add_parser('setup'); x.add_argument('--apply', action='store_true'); x.add_argument('--approve-source')
     e = sub.add_parser('engine').add_subparsers(dest='ecmd', required=True)
     e.add_parser('status')
     x = e.add_parser('stage-node'); x.add_argument('--apply', action='store_true')
@@ -59,17 +69,22 @@ def main(argv=None):
         elif args.cmd == 'recheck': out = api.recheck(args.run, args.rerun)
         elif args.cmd == 'report': out = api.report_run(args.run)
         elif args.cmd == 'certify': out = api.certify(args.run)
-        elif args.ecmd == 'status': out = engine.status()
-        elif args.ecmd == 'stage-node': out = engine.stage_node(args.apply)
-        elif args.ecmd == 'setup': out = engine.setup(args.node, args.approve_source, args.apply, args.tarball)
-        elif args.ecmd == 'tools':
+        elif args.cmd == 'analyze': out = api.analyze(args.run, args.decompiler)
+        elif args.cmd == 'native' and args.ncmd == 'status': out = api.native_status()
+        elif args.cmd == 'native' and args.ncmd == 'setup': out = api.native_setup(args.apply, args.approve_source)
+        elif args.cmd == 'ghidra' and args.gcmd == 'status': out = api.ghidra_status()
+        elif args.cmd == 'ghidra' and args.gcmd == 'setup': out = api.ghidra_setup(args.apply, args.approve_source)
+        elif args.cmd == 'engine' and args.ecmd == 'status': out = engine.status()
+        elif args.cmd == 'engine' and args.ecmd == 'stage-node': out = engine.stage_node(args.apply)
+        elif args.cmd == 'engine' and args.ecmd == 'setup': out = engine.setup(args.node, args.approve_source, args.apply, args.tarball)
+        elif args.cmd == 'engine' and args.ecmd == 'tools':
             tools = engine.list_tools(args.match)
             out = tools if args.schema else {'count': len(tools), 'tools': [t['name'] for t in tools]}
-        elif args.ecmd == 'call':
+        elif args.cmd == 'engine' and args.ecmd == 'call':
             with open(args.calls) as f:
                 out = engine.call_batch(args.run, json.load(f))
     except (ValueError, OSError, KeyError, TypeError) as err:
-        print(json.dumps({'error': str(err)}, ensure_ascii=False))
+        print(json.dumps({'error': str(err), 'command': args.cmd}, ensure_ascii=False))
         return 2
     print(json.dumps(out, indent=2, ensure_ascii=False))
     return 0

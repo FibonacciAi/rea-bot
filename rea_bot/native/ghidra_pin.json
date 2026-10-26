@@ -1,0 +1,11 @@
+{
+  "version": "12.1.4",
+  "approve": "lostwax-ghidra@12.1.4",
+  "filename": "ghidra_12.1.4_PUBLIC_20260921.zip",
+  "sha256": "ddac49f903da9d5bac833e5cc79395098b9c33cfd3279be5f31bd00387d2d4db",
+  "url": "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1.4_build/ghidra_12.1.4_PUBLIC_20260921.zip",
+  "java_major": 21,
+  "properties_rel": "Ghidra/application.properties",
+  "properties_sha256": "e84c26b08545eee63d24a1a8a4dd7905e4209538e2e7192093877c435c64eb67",
+  "version_line": "application.version=12.1.4"
+}
