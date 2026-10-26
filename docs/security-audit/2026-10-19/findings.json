@@ -1,0 +1,65 @@
+[
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "rea_bot/engine.collect_evidence.nested-evidence-id",
+    "title": "Nested engine-result evidence ids unlock JavaScript prepare",
+    "description": "rea_engine_call forwards the client tool name and arguments into one engine stdio session. On a non-error tools/call result, collect_evidence walks structuredContent and every content item whose text parses as JSON, and stores every string whose key is evidence_id or parent_evidence_id. add_engine_evidence writes those strings unchanged. For a run whose route kind is javascript-application or electron-asar, prepare treats exact membership of any build evidence id in that set as sufficient to save the spec and leave engine_waiver unset. When engine status is ready, an id outside the set raises. A local stdio double, with no network and no real engine, can return a nested evidence_id and a JSON text evidence_id that call_batch stores, after which prepare saves a spec. Whether a real rea-agents result can carry a target-chosen key of either name is unresolved. The unlocked action is persistence of the caller-supplied capability matrix. Diff still requires a separate digest approval before an original program runs.",
+    "claimed_root_cause": "collect_evidence accepts any nested string under the key evidence_id or parent_evidence_id from a non-error engine tools/call result, and prepare unlocks javascript-application and electron-asar routes when a caller-supplied evidence id is an exact member of that set. This repository stores the string with no engine-minted format check. Whether rea-agents copies a target-controlled key of either name into structuredContent or into a JSON text content item is outside this repository.",
+    "trace": [
+      {"kind": "entrypoint", "file": "server/mcp_server.py", "line": 60, "scope": "call", "description": "The rea_engine_call branch passes the client run_id and calls array to engine.call_batch."},
+      {"kind": "propagation", "file": "rea_bot/engine.py", "line": 246, "scope": "call_batch", "description": "Each call is sent as a tools/call request whose name and arguments come from the client, and the engine process result object is kept."},
+      {"kind": "propagation", "file": "rea_bot/engine.py", "line": 249, "scope": "call_batch", "description": "When isError is false, structuredContent is passed to collect_evidence. An error result skips collection."},
+      {"kind": "propagation", "file": "rea_bot/engine.py", "line": 211, "scope": "collect_evidence", "description": "A dict key named evidence_id or parent_evidence_id with a string value is added at any nesting depth. Other keys and lists are walked. A string under any other key is not parsed."},
+      {"kind": "propagation", "file": "rea_bot/engine.py", "line": 258, "scope": "call_batch", "description": "The collected set is passed to add_engine_evidence with no format or prefix check."},
+      {"kind": "sink", "file": "rea_bot/api.py", "line": 48, "scope": "prepare", "description": "When the run route has engine_evidence_required, prepare accepts the build if any evidence record id is a member of the stored engine-evidence set."}
+    ],
+    "evidence": [
+      {"file": "rea_bot/engine.py", "line": 211, "description": "The only acceptance test is the key name evidence_id or parent_evidence_id and a string value. The string is stored as given."},
+      {"file": "rea_bot/engine.py", "line": 253, "description": "A content item of type text whose text parses as JSON is walked by the same collector. Invalid JSON is ignored."},
+      {"file": "rea_bot/store.py", "line": 89, "description": "add_engine_evidence unions the collected strings into engine-evidence.json with no pattern check."},
+      {"file": "rea_bot/workbench.py", "line": 34, "description": "ENGINE_ROUTES contains javascript-application and electron-asar."},
+      {"file": "rea_bot/workbench.py", "line": 141, "description": "A directory that contains package.json is classified javascript-application."},
+      {"file": "rea_bot/workbench.py", "line": 168, "description": "route_target sets engine_evidence_required when the kind is in ENGINE_ROUTES."},
+      {"file": "rea_bot/api.py", "line": 50, "description": "If no evidence id is in the stored set and engine status is ready, prepare raises. A waiver is recorded only when the engine is not ready."}
+    ],
+    "blockers": [
+      "The rea-agents 6.5.0 implementation is not in this repository. engine/ contains UPSTREAM.json, package-lock.json, and vendor-integrity.json. No tools/call result body is committed. assets/demo-transcript.txt records only a summary id of the form ev_ plus hex from analyze_javascript_application, which does not include the result object. It is unknown whether a non-error result places a target-controlled object key named evidence_id or parent_evidence_id in structuredContent or in a content text value that parses as JSON. A string kept under any other key is not collected, so file text that merely contains those words does not decide it."
+    ],
+    "validation_plan": {
+      "local": "In a scratch directory, with no network and without writing the repository, use a fake node executable that prints v22.20.0 for --version and otherwise answers one JSON-RPC stdio session: respond to initialize, ignore notifications/initialized, and on tools/call return isError false with a nested evidence_id string. Point REA_BOT_ENGINE_HOME at a scratch home whose runtime.json has version 6.5.0, source_execution_approved true, and node set to that executable, and create an empty engine/scripts/rea.mjs so status is ready. Point REA_BOT_HOME at a scratch runs directory. Create a run for a directory that contains only a dummy package.json, then call_batch one call and prepare with the planted id. This checks this repository's collector and prepare gate only. It does not show that the real engine echoes target keys.",
+      "deployment": "An owner whose engine status is already ready, and who does not run setup, stage-node, or any download, creates a scratch directory containing package.json and planted.json. planted.json is the object {\"evidence_id\":\"planted-evidence-id\",\"nested\":{\"parent_evidence_id\":\"planted-parent\"}}. They create a run and make one already-staged analyze_javascript_application call with source_paths [\"planted.json\"] and detail summary. They open the saved result JSON and record whether isError is false and whether either planted string is the value of a key named evidence_id or parent_evidence_id inside structuredContent or inside a content text item that parses as JSON. They stop there. Do not call prepare, execute the dummy file, or fetch an engine. Presence under one of those keys on a non-error result means this repository will store the string and a later prepare that links it will save a javascript-application spec. Absence from that saved result refutes the claim for the analyze_javascript_application result that prepare tells the caller to obtain."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "rea_bot/workbench.py:local_path:PRIVATE_PARTS",
+    "title": "Case-variant .ssh spelling passes local_path before inventory read",
+    "description": "rea_inspect calls inspect, which calls inspect_local. inspect_local calls local_path before it opens any candidate. The exclusion compares each path component with case-sensitive membership in PRIVATE_PARTS, where .ssh appears only in that exact spelling, and with secret_name, which lowercases but has no .ssh entry. The same test is applied to the caller parts and to the parts of Path.resolve. A directory walk skips child names that start with a dot, so a nested .ssh directory is skipped. The selected path itself is not passed through that child filter. Whether a case-variant spelling of the selected directory is the real SSH directory, so local_path returns and a later open runs, depends on filesystem case folding that this case-sensitive host cannot show. id_rsa remains excluded by secret_name even if the directory is entered. The open would hash non-denied names such as known_hosts; it would not return file bodies.",
+    "claimed_root_cause": "_private uses case-sensitive membership for PRIVATE_PARTS on the caller parts and on the parts returned by resolve. .ssh is only in that set. secret_name lowercases but does not list .ssh. When resolve keeps the requested spelling of a non-symlink component, a case-variant component fails the denylist.",
+    "trace": [
+      {"kind": "entrypoint", "file": "server/mcp_server.py", "line": 49, "scope": "call", "description": "rea_inspect passes the caller-supplied run id and target to api.inspect."},
+      {"kind": "propagation", "file": "rea_bot/api.py", "line": 31, "scope": "inspect", "description": "With a run id, inspect sends the selected target to workbench.inspect_local."},
+      {"kind": "propagation", "file": "rea_bot/workbench.py", "line": 73, "scope": "local_path", "description": "local_path raises only when a component is secret_name or an exact PRIVATE_PARTS member, checking both the caller spelling and the resolved spelling."},
+      {"kind": "sink", "file": "rea_bot/workbench.py", "line": 225, "scope": "inspect_local", "description": "inspect_local opens each remaining candidate and reads a bounded sample. Bodies are not copied into the returned record."}
+    ],
+    "evidence": [
+      {"file": "rea_bot/workbench.py", "line": 24, "description": "PRIVATE_PARTS contains the exact directory spelling .ssh, along with .aws, .codex, .agents, .gnupg, .docker, and .kube."},
+      {"file": "rea_bot/workbench.py", "line": 52, "description": "secret_name lowercases the component before its prefix, set, and suffix tests."},
+      {"file": "rea_bot/workbench.py", "line": 53, "description": "The lowered secret_name set includes id_rsa and id_ed25519 and does not include .ssh."},
+      {"file": "rea_bot/workbench.py", "line": 59, "description": "_private matches a component when secret_name is true or the component is an exact member of PRIVATE_PARTS."},
+      {"file": "rea_bot/workbench.py", "line": 68, "description": "local_path raises when the selected path does not exist, before the private-part test. On a case-sensitive filesystem a different spelling of an existing directory fails here."},
+      {"file": "rea_bot/workbench.py", "line": 73, "description": "After strict resolve, local_path applies _private to p.parts and real.parts and otherwise returns the caller path."},
+      {"file": "rea_bot/workbench.py", "line": 192, "description": "inspect_local calls local_path before it builds the candidate list or opens a file."},
+      {"file": "rea_bot/workbench.py", "line": 200, "description": "During a directory walk, a child whose name starts with a dot is skipped. That test does not re-check the selected directory's own spelling."},
+      {"file": "rea_bot/workbench.py", "line": 207, "description": "A walked file is skipped when it is a symlink, secret_name, or dot-prefixed. id_rsa is skipped here. known_hosts is not."},
+      {"file": "tests/test_workbench.py", "line": 131, "description": "The private-path regression uses the exact directory spelling .ssh and does not cover a case variant."}
+    ],
+    "blockers": [
+      "This host is case-sensitive, so a case-variant component is not the real SSH directory. When that spelling is absent, local_path raises at the existence check. A decoy directory with a different spelling is a different directory and cannot show that the real credential directory was reached.",
+      "Whether the real home SSH directory is accepted under a case-variant spelling, and whether local_path then raises, was not observed. POSIX resolve in the local CPython 3.12 runtime keeps the requested spelling of a non-symlink component. macOS APFS case folding of the real directory was not run."
+    ],
+    "validation_plan": {
+      "local": "On macOS, call local_path with the absolute path of the already-present home SSH directory, using a case-variant spelling of that directory component. Record only whether it raises ValueError with the credential-exclusion message. Do not print file bodies, names, hashes, or directory listings, and do not create a substitute directory."
+    }
+  }
+]
