@@ -84,7 +84,7 @@ def main(argv=None):
             with open(args.calls) as f:
                 out = engine.call_batch(args.run, json.load(f))
     except (ValueError, OSError, KeyError, TypeError) as err:
-        print(json.dumps({'error': str(err)}, ensure_ascii=False))
+        print(json.dumps({'error': str(err), 'command': args.cmd}, ensure_ascii=False))
         return 2
     print(json.dumps(out, indent=2, ensure_ascii=False))
     return 0

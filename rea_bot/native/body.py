@@ -7,7 +7,7 @@ reduce. Nothing is executed.
 import re
 import struct
 
-from .decompile import _copy_state, _get, _rename, _seed, _set, _slot
+from .decompile import _ALIAS, _copy_state, _get, _rename, _seed, _set, _slot
 from .prototypes import CLOBBER, REGS, lookup, normalize
 from .struct import structure_function
 
@@ -38,8 +38,17 @@ def decompile_body(md, insns, arch, parameters=None, names=None, strings=None, c
     if not blocks:
         return None
     by = {block["start"]: block for block in blocks}
+    _mark_tail_calls(blocks, names)
     _dataflow(blocks, by, arch, convention, names, strings, memory)
+    blocks, by, split = _split_on_switch_targets(blocks, rows)
+    if split:
+        # Case bodies were in the middle of a block. Splitting them gives each
+        # arm its own statements, then dataflow runs again on that CFG.
+        _mark_tail_calls(blocks, names)
+        _dataflow(blocks, by, arch, convention, names, strings, memory)
+    _external_tails(blocks, names)
     _trim_switches(blocks, by)
+    _split_flag_joins(blocks, by)
     succs = {block["start"]: list(block["succs"]) for block in blocks}
     for block in blocks:
         for target in block.get("switch_targets") or []:
@@ -73,7 +82,55 @@ def decompile_body(md, insns, arch, parameters=None, names=None, strings=None, c
     header = _header(blocks, parameters)
     if header:
         text = header + "\n" + text
-    return drop_dead_stores([line for line in text.split("\n") if line.strip()])
+    lines = drop_dead_stores([line for line in text.split("\n") if line.strip()])
+    text = _name_returns("\n".join(lines))
+    text = recover_fields(text, arch)
+    return [line for line in text.split("\n") if line.strip()]
+
+
+_THUNK_MNEM = {"endbr64", "endbr32", "nop", "jmp", "br", "adrp", "ldr", "add", "mov"}
+
+
+def _mark_tail_calls(blocks, names):
+    """An import stub's indirect jump is a call, not a goto."""
+    names = names or {}
+    for block in blocks:
+        if block.get("kind") != "ijmp":
+            continue
+        insns = block.get("insns") or []
+        if not insns:
+            continue
+        for op in insns[-1].get("ops") or []:
+            if op.get("k") == "mem" and op.get("abs") in names:
+                block["tail_call"] = names[op["abs"]]
+                break
+        if block.get("tail_call"):
+            continue
+        entry = insns[0].get("address")
+        if entry in names and len(insns) <= 8 and all(
+                str(item.get("mnem", "")).split()[-1] in _THUNK_MNEM for item in insns):
+            block["tail_call"] = names[entry]
+
+
+def _external_tails(blocks, names):
+    """A jump out of the function is a tail call, not a goto to a raw address."""
+    inside = {block["start"] for block in blocks}
+    names = names or {}
+    for block in blocks:
+        if block.get("kind") != "goto":
+            continue
+        target = block.get("target")
+        if target is None or target in inside:
+            continue
+        label = names.get(target) or ("sub_%x" % target)
+        call = label if "(" in str(label) else "%s()" % label
+        if not str(call).endswith(";"):
+            call = "%s;" % call
+        stmts = block.setdefault("stmts", [])
+        if call not in stmts:
+            stmts.append(call)
+        block["kind"] = "fall"
+        block["succs"] = []
 
 
 def _m(item):
@@ -108,11 +165,14 @@ def _imm(ops):
     return None
 
 
-def _blocks(rows):
+def _blocks(rows, extra=()):
     if not rows:
         return []
     by_addr = {row["address"]: row for row in rows}
     leaders = {rows[0]["address"]}
+    for addr in extra or ():
+        if addr in by_addr:
+            leaders.add(addr)
     for row in rows:
         kind, target = _term(row)
         nxt = row["address"] + row["size"]
@@ -201,6 +261,7 @@ def _loops(by, succs, dom):
         for target in targets:
             if target in dom.get(src, ()):
                 headers.setdefault(target, set()).add(src)
+    preds = _preds(succs)
     loops = {}
     for header, latches in headers.items():
         body = {header}
@@ -210,7 +271,7 @@ def _loops(by, succs, dom):
             if node in body:
                 continue
             body.add(node)
-            for pred in _preds(succs).get(node, []):
+            for pred in preds.get(node, []):
                 stack.append(pred)
         exits = []
         for node in body:
@@ -257,22 +318,226 @@ def _ipdom(by, succs):
     return ipdom
 
 
+_SKIP_PHI = {"rsp", "esp", "sp"}
+
+
+def _wide_reg(reg):
+    """The 64-bit name of a register, so eax and rax share one phi."""
+    if not reg:
+        return reg
+    other = _ALIAS.get(reg)
+    if not other:
+        return reg
+
+    def rank(name):
+        if name.startswith(("e", "w")) or (name.startswith("r") and name.endswith("d") and name[1:-1].isdigit()):
+            return 0
+        return 1
+
+    return reg if rank(reg) >= rank(other) else other
+
+
+def _reg_defined(value, wide):
+    """A raw register name is an unset value, not a second definition."""
+    if value is None:
+        return False
+    text = str(value)
+    if text in {wide, _ALIAS.get(wide), "reg", "mem", "eax", "rax", "w0", "x0"}:
+        return False
+    return True
+
+
+def _meet_states(incoming, at):
+    """One state for every predecessor. Disagreeing values become a phi name.
+
+    Flags that disagree stay unset. An empty compare is then split per edge.
+    A block that also emits statements keeps one predecessor's flags, because
+    copying those statements would copy a call.
+    """
+    base = _copy_state(incoming[0])
+    if len(incoming) == 1:
+        return base, {}
+    phis = {}
+    seen_wide = set()
+    regs = set()
+    for state in incoming:
+        regs.update((state.get("regs") or {}))
+    for reg in regs:
+        wide = _wide_reg(reg)
+        if not wide or wide in _SKIP_PHI or wide in phis:
+            continue
+        if wide in seen_wide:
+            continue
+        seen_wide.add(wide)
+        values = [_get(state, wide) for state in incoming]
+        defined = [value for value in values if _reg_defined(value, wide)]
+        if len(set(defined)) <= 1:
+            if defined:
+                _set(base, wide, defined[0])
+            continue
+        # Keep the phi this join already published. A later pass sees the
+        # back edge as `(v + ...)`, and a fresh phi here would spread into
+        # every register that expression touches.
+        name = "v_%x_%s" % (at, wide)
+        if any(name in str(value) for value in defined):
+            _set(base, wide, name)
+            phis[wide] = name
+            continue
+        phis[wide] = name
+        _set(base, wide, name)
+    # Stack slots stay with the first predecessor. A spill of argc is the same
+    # value on every path that has it; phieing the slot rewrote the call.
+    flags = [state.get("flags") for state in incoming]
+    if any(item != flags[0] for item in flags):
+        base["flags"] = None
+    return base, phis
+
+
 def _dataflow(blocks, by, arch, convention, names, strings, memory):
     entry = _seed(arch)
     state_in = {blocks[0]["start"]: entry}
+    phis_at = {}
+    fallback_at = {}
     for _ in range(3):
+        preds = _preds({block["start"]: block["succs"] for block in blocks})
         for block in blocks:
-            incoming = [by[pred]["out"] for pred in _preds({b["start"]: b["succs"] for b in blocks}).get(block["start"], [])
-                        if by[pred].get("out")]
+            incoming = [by[pred]["out"] for pred in preds.get(block["start"], []) if by[pred].get("out")]
             if incoming:
-                state = _copy_state(incoming[0])
+                state, phis = _meet_states(incoming, block["start"])
+                phis_at[block["start"]] = phis
+                if phis:
+                    fallback_at.setdefault(block["start"], {})
+                    for _reg, name in phis.items():
+                        fallback_at[block["start"]].setdefault(name, _get(incoming[0], _reg if not isinstance(_reg, tuple) else "rax"))
             else:
                 state = _copy_state(state_in.get(block["start"], entry))
+                phis_at[block["start"]] = {}
+                incoming = []
             block["stmts"], block["out"], block["cond"], block["switch"] = _exec(
                 block, state, arch, convention, names, strings, memory)
+            if block["kind"] == "if" and not block["cond"] and block.get("stmts") and not block.get("flags_local") and incoming:
+                probe = _copy_state(state)
+                probe["flags"] = incoming[0].get("flags")
+                if block.get("insns"):
+                    block["cond"] = _cond(probe, block["insns"][-1])
             if block["switch"]:
                 block["switch_targets"] = [row[1] for row in block["switch"]["cases"]]
     _propagate_flags(blocks, by)
+    _recover_phi_switches(blocks, by, memory, strings)
+    _materialize_phis(blocks, by, phis_at, fallback_at)
+
+
+def _materialize_phis(blocks, by, phis_at, fallback_at):
+    """Write a phi on the edges that reach a returned value.
+
+    Other joins keep the first predecessor's value in the text. Emitting every
+    disagreeing register made the listing larger than the region it replaced.
+    """
+    used = set()
+    for block in blocks:
+        for stmt in block.get("stmts") or []:
+            if str(stmt).startswith("return"):
+                used.update(_code_idents(stmt))
+    # A phi can be the value of another phi. Close over those names or the
+    # outer assignment names a value that was never written.
+    changed = True
+    while changed:
+        changed = False
+        for block in blocks:
+            out = block.get("out") or {}
+            for target in block.get("succs") or []:
+                for key, name in (phis_at.get(target) or {}).items():
+                    if name not in used:
+                        continue
+                    if isinstance(key, tuple) and key and key[0] == "slot":
+                        value = (out.get("slots") or {}).get(key[1])
+                    else:
+                        value = _get(out, key)
+                    for ident in _code_idents(str(value)):
+                        if ident not in used:
+                            used.add(ident)
+                            changed = True
+    fresh = []
+    for block in list(blocks):
+        targets = list(block.get("succs") or [])
+        if not targets or block.get("kind") == "ret":
+            continue
+        out = block.get("out") or {}
+        planned = {}
+        for target in targets:
+            rows = []
+            for key, name in (phis_at.get(target) or {}).items():
+                if name not in used:
+                    continue
+                if isinstance(key, tuple) and key and key[0] == "slot":
+                    value = (out.get("slots") or {}).get(key[1])
+                else:
+                    value = _get(out, key)
+                if value is None or value == name:
+                    continue
+                rows.append("%s = %s;" % (name, value))
+            if rows:
+                planned[target] = rows
+        if not planned:
+            continue
+        if len(targets) == 1 and block.get("kind") != "if":
+            _append_phi(block, planned[targets[0]])
+            continue
+        for index, target in enumerate(targets):
+            rows = planned.get(target)
+            if not rows:
+                continue
+            start = block["start"] + (index + 1) * 0x20000000000
+            while start in by:
+                start += 0x20000000000
+            edge = {"start": start, "insns": [], "kind": "fall", "succs": [target],
+                    "stmts": rows, "cond": None, "switch": None, "out": out}
+            block["succs"] = [start if item == target else item for item in block["succs"]]
+            fresh.append(edge)
+            by[start] = edge
+    blocks.extend(fresh)
+    _rewrite_unused_phis(blocks, fallback_at, used)
+
+
+def _rewrite_unused_phis(blocks, fallback_at, kept):
+    """Put the first predecessor's value back where a phi is not returned."""
+    table = {}
+    for mapping in fallback_at.values():
+        for name, expr in mapping.items():
+            if name in kept or not expr or expr == name:
+                continue
+            table[name] = str(expr)
+    if not table:
+        return
+    pattern = re.compile(r"\b(%s)\b" % "|".join(re.escape(name) for name in sorted(table, key=len, reverse=True)))
+
+    def sub(text, rounds=6):
+        current = text
+        for _ in range(rounds):
+            updated = pattern.sub(lambda match: table.get(match.group(1), match.group(1)), current)
+            if updated == current:
+                break
+            current = updated
+        return current
+
+    for block in blocks:
+        block["stmts"] = [sub(stmt) for stmt in (block.get("stmts") or [])]
+        if block.get("cond"):
+            block["cond"] = sub(block["cond"])
+        switch = block.get("switch")
+        if switch and switch.get("expr"):
+            switch["expr"] = sub(switch["expr"])
+
+
+def _append_phi(block, rows):
+    stmts = list(block.get("stmts") or [])
+    at = len(stmts)
+    for index, stmt in enumerate(stmts):
+        if str(stmt).startswith("return "):
+            at = index
+            break
+    stmts[at:at] = rows
+    block["stmts"] = stmts
 
 
 def _exec(block, state, arch, convention, names, strings, memory):
@@ -303,10 +568,16 @@ def _exec(block, state, arch, convention, names, strings, memory):
             continue
         if mnem == "movsxd" and len(ops) >= 2 and ops[1]["k"] == "mem" and ops[1].get("index"):
             switch = _switch_from(state, item, block["insns"][index:], memory, strings)
+            if switch is None:
+                # The base may be a phi. The post-pass resolves one integer.
+                block["_switch_retry"] = (_copy_state(state), item, "from")
         if mnem == "jmp" and any(op["k"] == "mem" and op.get("index") for op in ops):
             found = _switch_abs(state, item, memory, strings)
             if found:
                 switch = found
+                block.pop("_switch_retry", None)
+            else:
+                block["_switch_retry"] = (_copy_state(state), item, "abs")
         if mnem in {"mov", "movzx", "movsx", "movsxd", "lea"} and ops:
             _move(state, ops[0], ops[1] if len(ops) > 1 else {"k": "?"}, mnem, strings)
             continue
@@ -317,6 +588,35 @@ def _exec(block, state, arch, convention, names, strings, memory):
         if mnem in {"cmp", "test"} and len(ops) >= 2:
             state["flags"] = {"k": mnem, "l": _rval(state, ops[0], strings), "r": _rval(state, ops[1], strings),
                               "bits": _op_bits(ops, arch)}
+            defined = True
+            continue
+        if mnem in {"fcmp", "fcmpe"} and ops:
+            # A floating immediate (#0.0) is not a capstone IMM operand.
+            if len(ops) >= 2 and ops[1]["k"] in {"reg", "imm"}:
+                right = _rval(state, ops[1], strings)
+            else:
+                right = "0"
+            state["flags"] = {"k": "cmp", "l": _rval(state, ops[0], strings), "r": right, "bits": 64}
+            defined = True
+            continue
+        if mnem in {"ccmp", "ccmn"} and len(ops) >= 2:
+            # Reached only when the condition holds, so the flags are the compare.
+            left = _rval(state, ops[0], strings)
+            right = _rval(state, ops[1], strings)
+            if mnem == "ccmp":
+                state["flags"] = {"k": "cmp", "l": left, "r": right, "bits": _op_bits(ops, arch)}
+            else:
+                state["flags"] = {"k": "add", "l": left, "r": right,
+                                  "res": "(%s + %s)" % (_num(left), _num(right)), "bits": _op_bits(ops, arch)}
+            defined = True
+            continue
+        if mnem == "bics" and ops and ops[0]["k"] == "reg" and len(ops) >= 2:
+            right = _rval(state, ops[-1], strings)
+            left = _rval(state, ops[-2], strings) if len(ops) >= 3 else _get(state, ops[0]["r"])
+            result = "(%s & ~(%s))" % (left, right)
+            if ops[0].get("r") not in {"wzr", "xzr"}:
+                _set(state, ops[0]["r"], result)
+            state["flags"] = {"k": "test", "l": result, "r": "0", "bits": _op_bits(ops, arch)}
             defined = True
             continue
         if mnem == "cmn" and len(ops) >= 2:
@@ -533,10 +833,29 @@ def _rval(state, op, strings):
         if op.get("abs") is not None:
             return str(op["abs"])
         key = _slot(state, op)
-        if key is None:
-            return "mem"
-        return state.get("slots", {}).get(key, "mem")
+        if key is not None:
+            return state.get("slots", {}).get(key, "mem")
+        return _field_access(state, op)
     return "mem"
+
+
+def _field_access(state, op):
+    """A non-stack `[base + disp]` with no index. One offset is not yet a field."""
+    base_reg = op.get("base")
+    if not base_reg or op.get("index"):
+        return "mem"
+    if base_reg in {"rsp", "esp", "sp", "rbp", "ebp", "x29"}:
+        return "mem"
+    try:
+        disp = int(op.get("disp") or 0)
+    except (TypeError, ValueError):
+        return "mem"
+    if disp < 0 or disp > 4096:
+        return "mem"
+    base = str(_get(state, base_reg) or "")
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", base):
+        return "mem"
+    return "FIELD[%s+%d]" % (base, disp)
 
 
 def _narrow(value, reg):
@@ -689,6 +1008,58 @@ def _reg_bits(reg, arch):
     return 64
 
 
+def _split_flag_joins(blocks, by):
+    """Copy a flagless branch once per predecessor when the compares disagree.
+
+    The branch tests NZCV left by the blocks that reach it. One expression cannot
+    name two different compares, and the branch itself has no statements, so each
+    copy is the condition for that edge alone.
+    """
+    succs = {block["start"]: list(block["succs"]) for block in blocks}
+    preds = _preds(succs)
+    fresh = []
+    drop = set()
+    for block in blocks:
+        if block.get("kind") != "if" or block.get("cond") or block.get("stmts"):
+            continue
+        if block.get("flags_local") or not block.get("insns"):
+            continue
+        incoming = preds.get(block["start"], [])
+        if len(incoming) < 2:
+            continue
+        conds = []
+        ready = True
+        for pred in incoming:
+            out = (by.get(pred) or {}).get("out")
+            cond = _cond(out, block["insns"][-1]) if isinstance(out, dict) else None
+            if not cond:
+                ready = False
+                break
+            conds.append(cond)
+        if not ready:
+            continue
+        if len(set(conds)) == 1:
+            block["cond"] = conds[0]
+            continue
+        for index, pred in enumerate(incoming):
+            # Above any ELF virtual address, so the copy is not a real instruction.
+            start = block["start"] + (index + 1) * 0x10000000000
+            copy = {"start": start, "insns": block["insns"], "kind": "if", "target": block.get("target"),
+                    "succs": list(block["succs"]), "stmts": [], "cond": conds[index], "switch": None,
+                    "switch_targets": [], "flags_local": True, "flag_join": True}
+            pred_block = by[pred]
+            pred_block["succs"] = [start if item == block["start"] else item for item in pred_block["succs"]]
+            fresh.append(copy)
+            by[start] = copy
+        drop.add(block["start"])
+    if not drop:
+        return
+    blocks[:] = [block for block in blocks if block["start"] not in drop]
+    blocks.extend(fresh)
+    for start in drop:
+        by.pop(start, None)
+
+
 def _propagate_flags(blocks, by):
     """Copy flags through blocks that do not set them, when every predecessor agrees."""
     preds = _preds({block["start"]: block["succs"] for block in blocks})
@@ -795,6 +1166,86 @@ def _negate(cond):
     return "!(%s)" % cond
 
 
+_PHI_VALUE = re.compile(r"^v_([0-9A-Fa-f]+)_([A-Za-z0-9]+)$")
+
+
+def _as_int(value):
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _integers_reaching(value, reg, by, preds, seen):
+    """Integer addresses named by a phi. A symbolic input is not an address."""
+    number = _as_int(value)
+    if number is not None:
+        return {number}
+    match = _PHI_VALUE.match(str(value or ""))
+    if not match or match.group(2) != reg:
+        return set()
+    block_at = int(match.group(1), 16)
+    key = (block_at, reg)
+    if key in seen or block_at not in by:
+        return set()
+    seen.add(key)
+    found = set()
+    for pred in preds.get(block_at, []):
+        out = (by.get(pred) or {}).get("out") or {}
+        found |= _integers_reaching(_get(out, reg), reg, by, preds, seen)
+    return found
+
+
+def _recover_phi_switches(blocks, by, memory, strings):
+    """Decode a jump table whose base is a phi of one integer address.
+
+    The meet stays in place for every other value. The table is recovered
+    only when every integer that reaches that phi is the same address, and
+    the slots at that address point back into this function.
+    """
+    preds = _preds({block["start"]: list(block.get("succs") or []) for block in blocks})
+    for block in blocks:
+        retry = block.pop("_switch_retry", None)
+        if not retry or block.get("switch") or memory is None:
+            continue
+        state, item, kind = retry
+        ops = item.get("ops") or []
+        mem = next((op for op in ops if op.get("k") == "mem" and op.get("index")), None)
+        if mem is None:
+            continue
+        base_reg = mem.get("base")
+        patched = _copy_state(state)
+        if base_reg:
+            found = _integers_reaching(_get(state, base_reg), base_reg, by, preds, set())
+            if len(found) != 1:
+                continue
+            _set(patched, base_reg, str(next(iter(found))))
+        switch = (_switch_from(patched, item, block.get("insns") or [], memory, strings)
+                  if kind == "from" else _switch_abs(patched, item, memory, strings))
+        if not switch:
+            continue
+        block["switch"] = switch
+        block["switch_targets"] = [row[1] for row in switch["cases"]]
+
+
+def _split_on_switch_targets(blocks, rows):
+    """Cut a block at each jump-table target that is not already a leader.
+
+    Returns the same blocks when every target is already a block start.
+    """
+    starts = {block["start"] for block in blocks}
+    addrs = {row["address"] for row in rows}
+    cuts = set()
+    for block in blocks:
+        for _index, target in (block.get("switch") or {}).get("cases") or []:
+            if target in addrs and target not in starts:
+                cuts.add(target)
+    if not cuts:
+        return blocks, {block["start"]: block for block in blocks}, False
+    blocks = _blocks(rows, cuts)
+    return blocks, {block["start"]: block for block in blocks}, True
+
+
 def _switch_abs(state, item, memory, strings):
     """`jmp qword [index*8 + table]` entries are absolute addresses."""
     mem = next((op for op in item["ops"] if op["k"] == "mem" and op.get("index") and op.get("scale") in {4, 8}), None)
@@ -834,7 +1285,7 @@ def _switch_from(state, item, rest, memory, strings):
     base = _get(state, base_reg)
     try:
         base_addr = int(str(base))
-    except ValueError:
+    except (TypeError, ValueError):
         return None
     if memory is None:
         return None
@@ -1002,7 +1453,7 @@ def _emit(entry, by, succs, ipdom, loops, stop, loop_header=None, loop_exit=None
             lines.append("goto loc_%x;" % target)
             break
         if kind == "ijmp":
-            lines.append("goto indirect;")
+            lines.append("indirect();")
             break
         if not targets:
             break
@@ -1084,6 +1535,176 @@ def _label(lines):
     # Labels are attached by a second walk only when a goto remains. The address is the block start,
     # which the emitter does not currently prefix. Keep the goto; a label-less goto is still counted.
     return "\n".join(lines)
+
+
+# A result name is used only when the callee's catalog return is a pointer we can
+# actually see stored. The stem is the role of that pointer, not a guess at a type
+# we did not observe.
+_RETURN_NAMES = {
+    "readdir": "entry",
+    "readdir64": "entry",
+    "opendir": "dir",
+    "fdopendir": "dir",
+    "fopen": "stream",
+    "fdopen": "stream",
+    "getenv": "env",
+    "strdup": "copy",
+    "strstr": "match",
+    "strchr": "match",
+    "strrchr": "match",
+}
+
+# glibc dirent64. The same offsets are used on x86-64 and aarch64.
+_DIRENT = {0: "d_ino", 8: "d_off", 16: "d_reclen", 18: "d_type", 19: "d_name"}
+# glibc struct stat on x86-64 only. aarch64 uses a different layout, so it is not applied there.
+_STAT_X64 = {
+    0: "st_dev", 8: "st_ino", 16: "st_nlink", 24: "st_mode",
+    28: "st_uid", 32: "st_gid", 40: "st_rdev", 48: "st_size",
+    56: "st_blksize", 64: "st_blocks",
+}
+_FIELD = re.compile(r"FIELD\[([A-Za-z_][A-Za-z0-9_]*)\+(-?\d+)\]")
+_UNNAMED_BASE = re.compile(
+    r"^(?:param_\d+|arg\d+|FUN_[0-9A-Fa-f]+|sub_[0-9A-Fa-f]+|local_[0-9A-Fa-f]+|"
+    r"mem_[0-9A-Fa-f]+|data_[0-9A-Fa-f]+|undefined\d*|DAT_[0-9A-Fa-f]+)$")
+_CALL_HEAD = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+_SKIP_CALL = {"if", "while", "switch", "return", "for"}
+
+
+def _name_returns(text):
+    """Rename call_N when the callee's result is a known pointer."""
+    if not text or "call_" not in text:
+        return text
+    found = re.findall(r"\b(call_\d+)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(", text)
+    if not found:
+        return text
+    used = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", text))
+    counts = {}
+    mapping = {}
+    for call_var, callee in found:
+        stem = _RETURN_NAMES.get(normalize(callee))
+        if not stem or call_var in mapping:
+            continue
+        number = counts.get(stem, 0) + 1
+        counts[stem] = number
+        if number == 1 and stem not in used:
+            name = stem
+        else:
+            name = "%s_%d" % (stem, number)
+            while name in used:
+                number += 1
+                counts[stem] = number
+                name = "%s_%d" % (stem, number)
+        used.add(name)
+        mapping[call_var] = name
+    for call_var, name in sorted(mapping.items(), key=lambda item: -len(item[0])):
+        text = re.sub(r"\b%s\b" % re.escape(call_var), name, text)
+    return text
+
+
+def _split_args(blob):
+    args = []
+    depth = 0
+    start = 0
+    for index, char in enumerate(blob):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif char == "," and depth == 0:
+            args.append(blob[start:index].strip())
+            start = index + 1
+    tail = blob[start:].strip()
+    if tail:
+        args.append(tail)
+    return args
+
+
+def _iter_calls(text):
+    for match in _CALL_HEAD.finditer(text or ""):
+        name = match.group(1)
+        if name in _SKIP_CALL:
+            continue
+        depth = 1
+        index = match.end()
+        while index < len(text) and depth:
+            if text[index] == "(":
+                depth += 1
+            elif text[index] == ")":
+                depth -= 1
+            index += 1
+        if depth:
+            continue
+        yield name, _split_args(text[match.end():index - 1])
+
+
+def _ident_arg(text):
+    token = str(text or "").strip()
+    if token.startswith("(") and token.endswith(")"):
+        token = token[1:-1].strip()
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token):
+        return token
+    return ""
+
+
+def recover_fields(text, arch="x86-64"):
+    """Name structure fields when one base is read at two or more offsets.
+
+    A single offset stays `mem`: one displacement is not a structure. Offsets
+    less than 4 bytes apart, with no known struct, stay `mem` too: that is a
+    byte walk, not a field. A base that is still an unnamed token (`argN`,
+    `sub_…`) stays `mem`, so the recovery does not add unnamed tokens.
+    `readdir`'s result uses glibc dirent names when two of those offsets
+    appear. On x86-64, a buffer passed to `stat`, `fstat`, `lstat`, or
+    `fstatat` uses the glibc `struct stat` names on the same rule.
+    """
+    if not text or "FIELD[" not in text:
+        return text or ""
+    offsets = {}
+    for match in _FIELD.finditer(text):
+        offsets.setdefault(match.group(1), set()).add(int(match.group(2)))
+    dirent_bases = set()
+    for match in re.finditer(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*readdir(?:64)?\s*\(", text):
+        dirent_bases.add(match.group(1))
+    stat_bases = set()
+    if arch == "x86-64":
+        for name, args in _iter_calls(text):
+            key = normalize(name)
+            slot = {"stat": 1, "lstat": 1, "fstat": 1, "fstatat": 2}.get(key)
+            if slot is None or slot >= len(args):
+                continue
+            token = _ident_arg(args[slot])
+            if token:
+                stat_bases.add(token)
+    layouts = {}
+    for base, offs in offsets.items():
+        if _UNNAMED_BASE.match(base):
+            continue
+        chosen = None
+        if base in dirent_bases and len(offs & set(_DIRENT)) >= 2:
+            chosen = _DIRENT
+        if base in stat_bases and len(offs & set(_STAT_X64)) >= 2:
+            stat_hits = len(offs & set(_STAT_X64))
+            dirent_hits = len(offs & set(_DIRENT)) if chosen is _DIRENT else 0
+            if stat_hits >= dirent_hits:
+                chosen = _STAT_X64
+        # Offsets a few bytes apart, with no known struct, are a byte walk
+        # (the next character), not a field. A real field step is at least 4.
+        if chosen is None and (len(offs) < 2 or max(offs) - min(offs) < 4):
+            continue
+        layouts[base] = chosen
+    def repl(match):
+        base, disp = match.group(1), int(match.group(2))
+        offs = offsets.get(base) or set()
+        layout = layouts.get(base)
+        if layout is not None and disp in layout and len(offs & set(layout)) >= 2:
+            return "%s->%s" % (base, layout[disp])
+        if base in layouts and len(offs) >= 2:
+            return "%s->field_%x" % (base, disp)
+        return "mem"
+    rewritten = _FIELD.sub(repl, text)
+    if "FIELD[" in rewritten:
+        rewritten = re.sub(r"FIELD\[[^\]\n]*\]?", "mem", rewritten)
+    return rewritten
 
 
 def _usage_names(text, blocks):
