@@ -1,14 +1,14 @@
 """On-disk run store. Every handoff lives in files, so it survives new turns, subagents and routines.
 
 Layout (default root: $REA_BOT_HOME or /workspace/rea-bot-runs):
-  <run-id>/run.json            target, route, created time, status
+  <run-id>/run.json            target, route, created time, status, summary digest attestations
   <run-id>/inventory.json      latest static inventory (optional)
   <run-id>/engine-evidence.json evidence ids returned by real engine calls
   <run-id>/engine/<n>-<tool>.json full engine results (kept out of chat)
   <run-id>/specs/<sha256>.json  digest-verified specifications
   <run-id>/diff/<stamp>/        differential runner logs + summary
   <run-id>/source/              acquired npm, git or website tree
-  <run-id>/ledger.json          cumulative case results for one command/pin key
+  <run-id>/ledger.json          index into verified logs for one command/dependency-pin key
   <run-id>/scope.json, SCOPE.md static symbol index
   <run-id>/parity.json          latest parity accounting
   <run-id>/SPEC.md, PARITY.md, SCORECARD.md
@@ -82,6 +82,14 @@ class Run:
             meta.update(changes, updated=now())
             write_json(self.dir / 'run.json', meta)
             return meta
+
+    def record_diff(self, directory, summary_sha256):
+        """Merge attestations under the metadata lock across completing runs."""
+        with self.lock():
+            meta = self.meta
+            meta.setdefault('diff_attestations', {})[Path(directory).name] = summary_sha256
+            meta.update(latest_diff=str(directory), status='measured', updated=now())
+            write_json(self.dir / 'run.json', meta)
 
     # Engine evidence ---------------------------------------------------
     def engine_evidence(self):

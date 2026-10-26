@@ -24,6 +24,7 @@ def main(argv=None):
     a.add_argument('--engine-waiver', help='Reason the REA engine truly cannot run here (recorded in SPEC.md; refused when the engine is ready)')
     a = sub.add_parser('diff'); a.add_argument('run'); a.add_argument('--cases', required=True)
     a.add_argument('--reconstruction', required=True, help='argv string, e.g. "python3 adapter.py"')
+    a.add_argument('--reconstruction-pin', help='File or dependency tree to hash for safe case reuse; without it --resume re-executes all cases')
     a.add_argument('--original'); a.add_argument('--original-pin'); a.add_argument('--approve-original')
     a.add_argument('--timeout', type=float, default=10); a.add_argument('--spec')
     a.add_argument('--only', action='append'); a.add_argument('--failed-only', action='store_true'); a.add_argument('--resume', action='store_true')
@@ -34,8 +35,8 @@ def main(argv=None):
     a = sub.add_parser('certify'); a.add_argument('run')
     a = sub.add_parser('analyze', help='Native engine, optionally headless Ghidra. Does not execute the target.')
     a.add_argument('run')
-    a.add_argument('--decompiler', choices=('ghidra', 'native', 'auto'), default='auto',
-                   help='auto uses pinned Ghidra 12.1.4 when it is verified, otherwise the native lift')
+    a.add_argument('--decompiler', choices=('ghidra', 'native', 'auto'), default='native',
+                   help='native is the default; opt-in auto uses verified Ghidra 12.1.4 or falls back to the native lift')
     n = sub.add_parser('native').add_subparsers(dest='ncmd', required=True)
     n.add_parser('status')
     x = n.add_parser('setup'); x.add_argument('--apply', action='store_true'); x.add_argument('--approve-source')
@@ -54,7 +55,9 @@ def main(argv=None):
         if args.cmd == 'status': out = api.status()
         elif args.cmd == 'runs': out = api.runs()
         elif args.cmd == 'route': out = api.route(args.target)
-        elif args.cmd == 'pin': out = {'path': args.path, 'sha256': __import__('rea_bot.runner', fromlist=['x']).sha256_path(args.path)}
+        elif args.cmd == 'pin':
+            from . import runner
+            out = {'path': args.path, 'sha256': runner.sha256_path(args.path), 'pin_schema': runner.PIN_SCHEMA}
         elif args.cmd == 'new': out = api.new(args.target, args.id, args.note)
         elif args.cmd == 'acquire': out = api.acquire(args.run, args.target, args.id)
         elif args.cmd == 'inspect': out = api.inspect(args.run, args.target)
@@ -64,7 +67,7 @@ def main(argv=None):
         elif args.cmd == 'prepare': out = api.prepare(args.run, args.input, args.engine_waiver)
         elif args.cmd == 'diff': out = api.diff(args.run, args.cases, args.reconstruction, args.original, args.original_pin,
                                                 args.approve_original, args.timeout, args.spec, args.only, args.failed_only,
-                                                args.resume, args.protocol, args.compare)
+                                                args.resume, args.protocol, args.compare, args.reconstruction_pin)
         elif args.cmd == 'parity': out = api.parity(args.run, args.results, args.spec)
         elif args.cmd == 'recheck': out = api.recheck(args.run, args.rerun)
         elif args.cmd == 'report': out = api.report_run(args.run)

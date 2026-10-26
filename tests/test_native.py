@@ -1,3 +1,4 @@
+import shutil
 """Offline native engine: disassembly, wasm, archives, source maps. No network."""
 import json
 import struct
@@ -256,7 +257,7 @@ class Binaries(TempHome):
             self.assertIn("return", text)
             self.assertIn("+", text)
 
-    def test_x86_32_and_arm_cfg(self):
+    def test_x86_32_cfg(self):
         from rea_bot.native.binary import analyze_binary
         source = "int add(int a, int b){return a+b;} int use(void){return add(2,3);} void _start(void){use();}\n"
         with tempfile.TemporaryDirectory() as tmp:
@@ -277,6 +278,14 @@ class Binaries(TempHome):
             self.assertIn("add", by_name)
             self.assertTrue(any(c.get("name") == "add" for c in by_name["use"]["callees"]))
             self.assertIn("+", "\n".join(by_name["add"].get("pseudocode") or []))
+    @unittest.skipUnless(shutil.which('clang') and shutil.which('arm-linux-gnueabi-ld'),
+                         'optional ARM32 compiler/linker are not installed')
+    def test_arm32_cfg(self):
+        from rea_bot.native.binary import analyze_binary
+        source = "int add(int a, int b){return a+b;} int use(void){return add(2,3);} void _start(void){use();}\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "ops.c"
+            src.write_text(source)
             arm_cc = subprocess.run(["clang", "-x", "c", "-target", "arm-linux-gnueabi", "-marm", "-c", "-O0", "-fno-pic",
                                      "-ffreestanding", "-fno-asynchronous-unwind-tables", "-o", str(Path(tmp) / "opsarm.o"), str(src)],
                                     capture_output=True, text=True)

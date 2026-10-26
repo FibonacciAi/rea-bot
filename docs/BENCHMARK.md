@@ -1,6 +1,6 @@
 # Native engine benchmark
 
-0.7.0, one run of `python3 scripts/benchmark_native.py` on this machine. The 0.12.0 readability comparison (every decompiled function, not this sample) is in `docs/DECOMPILER.md`. Lostwax with Ghidra and REA with Ghidra both used pinned Ghidra 12.1.4. The native column did not. A follow-up static decompile, same Lostwax driver, read the prototype line of the sampled functions. The raw JSON is `docs/benchmark-last.json` and is not committed.
+Historical upstream 0.7.0 report, one run of `python3 scripts/benchmark_native.py`, retained as author-reported observations. The 0.12.0 readability comparison (every decompiled function, not this sample) is in `docs/DECOMPILER.md`. Lostwax with Ghidra and REA with Ghidra both used pinned Ghidra 12.1.4. The native column did not. A follow-up static decompile, same Lostwax driver, read the prototype line of the sampled functions. The equipped run and its follow-up were not independently reproduced in this repair environment; the raw JSON is `docs/benchmark-last.json` and is not committed. The JavaScript ranking below is withdrawn because the recovery tasks and modes were not matched.
 
 Lostwax used the pinned opt-in wheels (capstone 5.0.9, LIEF 1.0.0, wasmtime 50.0.1, dnfile 0.18.0, pyelftools 0.33, olefile 0.47). REA is rea-agents 6.5.0. The optional backends were already on disk. The script does not download them.
 
@@ -32,12 +32,12 @@ Procedure totals match on every row. The previous write-up listed 11,024 PE proc
 
 ## Wasm, JavaScript, archives, .NET, installers
 
-These rows do not use Ghidra. The native wins from 0.6.0 are unchanged.
+These historical rows do not use Ghidra. They describe different operations; they are not a general capability ranking. JavaScript recovery needs the corrected matched-input protocol below.
 
 | Target | Lostwax native | REA with the optional backend | Proof |
 | --- | --- | --- | --- |
 | hash-wasm CRC-32 | Callable `wasm-crc32`, 8 exports, 0 imports, 4 cases. Analyze did not execute it. 0.24s. | WABT 1.0.42: validation `valid`, 7 sections, 0 imports, 8 exports, decoded WAT of 10,045 code units. Runtime behavior was not performed. | `diff` 4/4 against `examples/crc32-slice/rebuild.py`. After `parity`, label `declared-features-match`. Global parity `unknown`. |
-| preact 10.24.3 module plus source map | 12 modules written from `sourcesContent`. The bundle was not executed. | `analyze_javascript_application` examined 26 of 28 rows, 933 semantic unknowns. Wakaru 1.14.0 status `complete`, 1 module, 0 failed. | Modules on disk. Not a runtime parity case. |
+| Preact 10.24.3 JavaScript recovery | **Unmeasured under matched inputs.** | **Unmeasured under matched inputs and appropriate modes.** | Earlier map-content extraction and structural bundle unpacking were different tasks; the old counts do not rank the tools. See [JavaScript protocol](JAVASCRIPT-BENCHMARK.md). |
 | hello 2.10-3 amd64 `.deb` | Kinds `ar`, `xz`, `tar`, and nested `gz`. 61 files, 2 nested archives, 1 ELF. 0.01s. Members were not executed. | `open_binary` error: unsupported binary format. | Unpacked only. |
 | Newtonsoft.Json 13.0.3 | TypeDef 415, MethodDef 3,865, Field 1,636, Param 4,236, MemberRef 2,051, CustomAttribute 3,444, AssemblyRef 4, Property 686, TypeRef 260. 3,707 methods with a body. 120 bodies lifted, 120 with C# text, 21 with `if (`. Sample `.ctor`: `base();` then `return;`. Sibling portable PDB: 235 documents, 2,177 locals. Document names are basenames. 0.39s. Not executed. | `inspect_managed_artifact` and `inspect_managed_members`, coverage complete. The same TypeDef and MethodDef counts. Member summary: 14,835 call edges, 5,937 field accesses, 722 user strings. No C# text. ILSpy was not configured. | Static. Counts match. The C# lines are a stack lift. |
 | NSIS installer built here (NSIS 3.09, zlib, not a third-party installer) | Kind `nsis`, 1 member `ops32.c`, `scripts_executed` false. | `open_binary` returned format `pe`, architecture `x86` (the stub). It did not list the member. | Unpacked only. |
@@ -45,18 +45,18 @@ These rows do not use Ghidra. The native wins from 0.6.0 are unchanged.
 
 A separate unit test, not this table, instantiates a wasm module with one function import. wasmtime's default stub returns 0, and `diff` matches `int(args[0]) + 0` on every generated case. That is not a WASI host. Analyze does not instantiate.
 
-## Where Lostwax is ahead on these targets
+## Reported Lostwax capabilities and their scope
 
 - Control-flow counts for every disassembled function, including the freestanding x86-32 and ARM32 binaries, without a Ghidra install.
 - Named import edges on x86-64, ARM64, PE, and Mach-O. `/bin/ls` has 612 import edges and 85 named callees. The ripgrep Mach-O has 2,875 import edges and 136 stub slots. The 0.6.0 Mach-O row had 0 import edges.
 - DWARF names in the native lift. `gcc -g` `add` is `return (right + left);`.
 - A numeric result for the CRC module: 4/4 runner-attested cases. WABT validates and prints WAT, and does not run the module.
-- Source-map recovery of 12 Preact modules. Wakaru, on this already-modular file, emitted 1 module.
+- The historical Preact source-map recovery is a static extraction observation, not a demonstrated win over Wakaru. The equal-input comparison is unmeasured.
 - C# stack text for 120 methods, and a portable PDB (235 documents, 2,177 locals). REA's metadata counts match and REA did not emit C#.
 - CAB, MSI, and NSIS members. REA rejected the MSI and treated the NSIS file as a PE stub.
 - Wall time under the 4,000-function cap. The Ghidra column is a finished auto-analysis and is a similar duration to REA, faster on the ELF rows and slower on the PE (254s against 241s).
 
-## Where REA is ahead
+## Reported REA/backend capabilities and their scope
 
 - Decompiler quality is the same decompiler. On stripped `/bin/ls` the typed body, `param_1`, and `getopt_long` are stock Ghidra. Feeding symbol names did not change that function. On `gcc -g` both sides print `left` and `right`.
 - String inventory after auto-analysis. `/bin/ls` lists 492 strings in REA against 124 string xrefs here. The ripgrep PE lists 3,779 strings, the Mach-O 6,045.
@@ -64,6 +64,14 @@ A separate unit test, not this table, instantiates a wasm module with one functi
 - WAT. The CRC module's decoded WAT is 10,045 code units. Lostwax does not print WAT.
 - The JavaScript application summary (26 of 28 rows, 933 semantic unknowns). The 12 recovered modules are not that model.
 - Whole-assembly managed structure: 14,835 call edges and 5,937 field accesses, against 120 lifted methods here.
+
+## JavaScript fairness correction
+
+At exact head `1959aa0f75332a16e6b0fe13d1fa73afb3322577`, `scripts/benchmark_native.py:295-314` explicitly let Lostwax read a sibling source map, then requested `recover_javascript_sources` on the JavaScript path with `extraction_mode: structural`. The separate REA application analysis received a directory containing both files. There was no symmetric source-map extraction call for the Wakaru recovery result.
+
+The historical author report counted 12 `sourcesContent` files on one side and one structural bundle output on the other. These observations do not establish comparative recovery quality, and the description of the bundle as “already modular” was unsupported. [The Wakaru author's comment](https://github.com/FibonacciAi/rea-bot/pull/4#issuecomment-6393439709) identifies strict versus heuristic unpacking and a separate source-map extraction command. This correction independently verifies the script configuration; the actual Preact bytes, Wakaru CLI mode mapping and historical raw outputs were unavailable locally and were not rerun.
+
+[The new protocol](JAVASCRIPT-BENCHMARK.md) separates bundle-only structural diagnostics, bundle-only heuristic recovery, and identical-map content extraction. Both sides get the same bytes for each task. Current paired results remain **unmeasured**; no new ranking or runtime-equivalence claim is made.
 
 ## Still open
 
