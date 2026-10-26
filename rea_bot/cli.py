@@ -14,16 +14,34 @@ def main(argv=None):
     a = sub.add_parser('route'); a.add_argument('target')
     a = sub.add_parser('pin', help='SHA-256 of a reviewed file or folder, for --approve-original'); a.add_argument('path')
     a = sub.add_parser('new'); a.add_argument('target'); a.add_argument('--id'); a.add_argument('--note')
+    a = sub.add_parser('acquire'); a.add_argument('run', nargs='?'); a.add_argument('--target'); a.add_argument('--id')
     a = sub.add_parser('inspect'); a.add_argument('run'); a.add_argument('--target')
+    a = sub.add_parser('scope'); a.add_argument('run'); a.add_argument('--path', required=True); a.add_argument('--symbol')
+    a = sub.add_parser('harness'); a.add_argument('run'); a.add_argument('--entry', required=True); a.add_argument('--symbol', required=True)
+    a.add_argument('--out', required=True); a.add_argument('--params'); a.add_argument('--language', choices=('js', 'py'))
+    a = sub.add_parser('cases'); a.add_argument('--input', required=True); a.add_argument('--out', required=True)
     a = sub.add_parser('prepare'); a.add_argument('run'); a.add_argument('--input', required=True, help='JSON with evidence, features, improvements')
     a.add_argument('--engine-waiver', help='Reason the REA engine truly cannot run here (recorded in SPEC.md; refused when the engine is ready)')
     a = sub.add_parser('diff'); a.add_argument('run'); a.add_argument('--cases', required=True)
     a.add_argument('--reconstruction', required=True, help='argv string, e.g. "python3 adapter.py"')
     a.add_argument('--original'); a.add_argument('--original-pin'); a.add_argument('--approve-original')
     a.add_argument('--timeout', type=float, default=10); a.add_argument('--spec')
+    a.add_argument('--only', action='append'); a.add_argument('--failed-only', action='store_true'); a.add_argument('--resume', action='store_true')
+    a.add_argument('--protocol', default='json', choices=('json', 'cli', 'html')); a.add_argument('--compare', choices=('exact', 'subset', 'text'))
     a = sub.add_parser('parity'); a.add_argument('run'); a.add_argument('--results'); a.add_argument('--spec')
     a = sub.add_parser('recheck'); a.add_argument('run'); a.add_argument('--rerun', action='store_true')
+    a = sub.add_parser('report'); a.add_argument('run')
     a = sub.add_parser('certify'); a.add_argument('run')
+    a = sub.add_parser('analyze', help='Native engine, optionally headless Ghidra. Does not execute the target.')
+    a.add_argument('run')
+    a.add_argument('--decompiler', choices=('ghidra', 'native', 'auto'), default='auto',
+                   help='auto uses pinned Ghidra 12.1.4 when it is verified, otherwise the native lift')
+    n = sub.add_parser('native').add_subparsers(dest='ncmd', required=True)
+    n.add_parser('status')
+    x = n.add_parser('setup'); x.add_argument('--apply', action='store_true'); x.add_argument('--approve-source')
+    g = sub.add_parser('ghidra').add_subparsers(dest='gcmd', required=True)
+    g.add_parser('status')
+    x = g.add_parser('setup'); x.add_argument('--apply', action='store_true'); x.add_argument('--approve-source')
     e = sub.add_parser('engine').add_subparsers(dest='ecmd', required=True)
     e.add_parser('status')
     x = e.add_parser('stage-node'); x.add_argument('--apply', action='store_true')
@@ -38,24 +56,35 @@ def main(argv=None):
         elif args.cmd == 'route': out = api.route(args.target)
         elif args.cmd == 'pin': out = {'path': args.path, 'sha256': __import__('rea_bot.runner', fromlist=['x']).sha256_path(args.path)}
         elif args.cmd == 'new': out = api.new(args.target, args.id, args.note)
+        elif args.cmd == 'acquire': out = api.acquire(args.run, args.target, args.id)
         elif args.cmd == 'inspect': out = api.inspect(args.run, args.target)
+        elif args.cmd == 'scope': out = api.scope(args.run, args.path, args.symbol)
+        elif args.cmd == 'harness': out = api.harness(args.run, args.entry, args.symbol, args.out, args.params, args.language)
+        elif args.cmd == 'cases': out = api.cases(args.input, args.out)
         elif args.cmd == 'prepare': out = api.prepare(args.run, args.input, args.engine_waiver)
         elif args.cmd == 'diff': out = api.diff(args.run, args.cases, args.reconstruction, args.original, args.original_pin,
-                                                args.approve_original, args.timeout, args.spec)
+                                                args.approve_original, args.timeout, args.spec, args.only, args.failed_only,
+                                                args.resume, args.protocol, args.compare)
         elif args.cmd == 'parity': out = api.parity(args.run, args.results, args.spec)
         elif args.cmd == 'recheck': out = api.recheck(args.run, args.rerun)
+        elif args.cmd == 'report': out = api.report_run(args.run)
         elif args.cmd == 'certify': out = api.certify(args.run)
-        elif args.ecmd == 'status': out = engine.status()
-        elif args.ecmd == 'stage-node': out = engine.stage_node(args.apply)
-        elif args.ecmd == 'setup': out = engine.setup(args.node, args.approve_source, args.apply, args.tarball)
-        elif args.ecmd == 'tools':
+        elif args.cmd == 'analyze': out = api.analyze(args.run, args.decompiler)
+        elif args.cmd == 'native' and args.ncmd == 'status': out = api.native_status()
+        elif args.cmd == 'native' and args.ncmd == 'setup': out = api.native_setup(args.apply, args.approve_source)
+        elif args.cmd == 'ghidra' and args.gcmd == 'status': out = api.ghidra_status()
+        elif args.cmd == 'ghidra' and args.gcmd == 'setup': out = api.ghidra_setup(args.apply, args.approve_source)
+        elif args.cmd == 'engine' and args.ecmd == 'status': out = engine.status()
+        elif args.cmd == 'engine' and args.ecmd == 'stage-node': out = engine.stage_node(args.apply)
+        elif args.cmd == 'engine' and args.ecmd == 'setup': out = engine.setup(args.node, args.approve_source, args.apply, args.tarball)
+        elif args.cmd == 'engine' and args.ecmd == 'tools':
             tools = engine.list_tools(args.match)
             out = tools if args.schema else {'count': len(tools), 'tools': [t['name'] for t in tools]}
-        elif args.ecmd == 'call':
+        elif args.cmd == 'engine' and args.ecmd == 'call':
             with open(args.calls) as f:
                 out = engine.call_batch(args.run, json.load(f))
     except (ValueError, OSError, KeyError, TypeError) as err:
-        print(json.dumps({'error': str(err)}, ensure_ascii=False))
+        print(json.dumps({'error': str(err), 'command': args.cmd}, ensure_ascii=False))
         return 2
     print(json.dumps(out, indent=2, ensure_ascii=False))
     return 0

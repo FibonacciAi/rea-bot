@@ -86,9 +86,9 @@ def route_target(target):
         match = re.fullmatch(r'npm:((?:@[a-z0-9._-]+/)?[a-z0-9._-]+)(?:@([a-zA-Z0-9.+_-]+))?', target)
         if not match:
             raise ValueError('Use npm:package@version or npm:@scope/package@version.')
-        out.update(kind='npm-package', first_tools=['npm pack/registry download (no install)', 'inspect', 'engine:analyze_javascript_application'],
+        out.update(kind='npm-package', first_tools=['rea-bot acquire (registry tarball, sha512 check, no lifecycle scripts)', 'rea-bot analyze', 'inspect', 'scope', 'engine:analyze_javascript_application'],
                    package_identity=npm_identity(*match.groups()),
-                   acquisition='Resolve an exact version and registry integrity, download the tarball without lifecycle scripts, verify integrity, inspect before extraction.')
+                   acquisition='rea-bot acquire resolves an exact version, checks registry integrity, and extracts the tarball without lifecycle scripts or dependency installs.')
     elif '://' in target:
         u = urlsplit(target)
         if u.scheme != 'https' or not u.hostname or u.username or u.password:
@@ -98,8 +98,8 @@ def route_target(target):
         parts = [unquote(x) for x in u.path.strip('/').split('/') if x]
         github_repository = u.hostname == 'github.com' and len(parts) >= 2 and parts[0].lower() not in GITHUB_PAGES
         if github_repository or u.path.endswith('.git') or (u.hostname in {'gitlab.com', 'bitbucket.org'} and len(parts) >= 2):
-            out.update(kind='git-repository', first_tools=['git clone --no-checkout + checkout pinned commit', 'inspect'],
-                       acquisition='Clone into the box workspace at an exact commit with hooks disabled, no submodules, no LFS, no dependency install, no target execution.')
+            out.update(kind='git-repository', first_tools=['rea-bot acquire (one commit, hooks and submodules off)', 'inspect', 'scope'],
+                       acquisition='rea-bot acquire fetches one resolved commit with hooks disabled, no submodules, no LFS smudge, and no target execution.')
             if github_repository:
                 owner, repository = parts[:2]
                 repository = repository.removesuffix('.git')
@@ -116,8 +116,8 @@ def route_target(target):
                         out['limitations'].append('Resolve branch/tag names with git ls-remote before acquisition; slash-containing refs can overlap the path. Do not silently use the default branch instead.')
         elif ((u.hostname in {'npmjs.com', 'www.npmjs.com'} and len(parts) > 1 and parts[0] == 'package')
                 or (u.hostname == 'registry.npmjs.org' and parts)):
-            out.update(kind='npm-package', first_tools=['npm pack/registry download (no install)', 'inspect', 'engine:analyze_javascript_application'],
-                       acquisition='Resolve and pin the package version and integrity; never npm install the target.')
+            out.update(kind='npm-package', first_tools=['rea-bot acquire (registry tarball, sha512 check, no lifecycle scripts)', 'rea-bot analyze', 'inspect', 'scope', 'engine:analyze_javascript_application'],
+                       acquisition='rea-bot acquire resolves an exact version, checks registry integrity, and extracts the tarball without lifecycle scripts or dependency installs.')
             if parts and parts[0] == 'package':
                 tail = parts[1:]
                 length = 2 if tail and tail[0].startswith('@') else 1
@@ -126,25 +126,32 @@ def route_target(target):
                 if re.fullmatch(r'(?:@[a-z0-9._-]+/)?[a-z0-9._-]+', package):
                     out['package_identity'] = npm_identity(package, version)
         else:
-            out.update(kind='website', first_tools=['WebFetch (static read)', 'box browser in a fresh profile for runtime observation', 'engine:inspect_web_page'],
-                       acquisition='Read static content first. Runtime observation needs a separate browser profile and an explicit scenario.')
-            out['limitations'].append('A URL alone does not authorize logins, credential use, form submission, or running target scripts outside a browser.')
+            out.update(kind='website', first_tools=['rea-bot acquire (static HTML and same-origin assets)', 'inspect', 'scope'],
+                       acquisition='rea-bot acquire saves the HTML document and a few same-origin static assets. It does not run page scripts.')
+            out['limitations'].append('A URL alone does not authorize logins, credential use, form submission, or running target scripts.')
+            out['limitations'].append('rea-bot acquire does not execute page scripts, so client-rendered text is not in the saved copy.')
     else:
         p = local_path(target)
         real = p.resolve()
         if real.is_dir():
             if real.suffix.lower() == '.app':
-                kind, tools = 'apple-app', ['inspect', 'engine:open_binary', 'engine:inspect_artifact']
+                kind, tools = 'apple-app', ['rea-bot analyze', 'inspect', 'engine:open_binary', 'engine:inspect_artifact']
             elif (real / '.git').exists():
                 kind, tools = 'source-repository', ['inspect', 'source reading with Read/rg']
             elif (real / 'package.json').is_file():
-                kind, tools = 'javascript-application', ['inspect', 'engine:analyze_javascript_application']
+                kind, tools = 'javascript-application', ['rea-bot analyze', 'inspect', 'scope', 'engine:analyze_javascript_application']
+            elif (real / 'pyproject.toml').is_file() or (real / 'setup.py').is_file() or (real / 'setup.cfg').is_file():
+                kind, tools = 'python-package', ['inspect', 'scope', 'source reading with Read/rg']
+            elif (real / 'go.mod').is_file():
+                kind, tools = 'go-module', ['inspect', 'scope', 'source reading with Read/rg']
+            elif (real / 'Cargo.toml').is_file():
+                kind, tools = 'rust-crate', ['inspect', 'scope', 'source reading with Read/rg']
             else:
-                kind, tools = 'source-directory', ['inspect', 'source reading with Read/rg']
+                kind, tools = 'source-directory', ['inspect', 'scope', 'source reading with Read/rg']
         elif real.suffix.lower() == '.asar':
-            kind, tools = 'electron-asar', ['engine:analyze_javascript_application']
+            kind, tools = 'electron-asar', ['rea-bot analyze', 'engine:analyze_javascript_application']
         elif real.suffix.lower() in ARCHIVES:
-            kind, tools = 'package-archive', ['inspect', 'engine:open_binary', 'engine:inspect_artifact']
+            kind, tools = 'package-archive', ['rea-bot analyze', 'inspect', 'engine:open_binary', 'engine:inspect_artifact']
         else:
             with real.open('rb') as f:
                 head = f.read(16)
@@ -157,9 +164,9 @@ def route_target(target):
                 kind, tools = 'jvm-class', ['inspect', 'source/artifact tools']
                 out['limitations'].append('Java class header observed; no Mach-O provider is selected. A JVM provider is a separate prerequisite.')
             elif head.startswith(BINARY_MAGIC):
-                kind, tools = 'native-or-managed-binary', ['inspect', 'engine:open_binary']
+                kind, tools = 'native-or-managed-binary', ['rea-bot analyze', 'inspect', 'engine:open_binary']
             elif head.startswith(b'\x00asm'):
-                kind, tools = 'wasm', ['inspect', 'engine:inspect_wasm_artifact']
+                kind, tools = 'wasm', ['rea-bot analyze', 'inspect', 'engine:inspect_wasm_artifact']
             elif real.suffix.lower() in TEXT:
                 kind, tools = 'source-file', ['inspect', 'source reading with Read/rg']
         out.update(kind=kind, first_tools=tools, acquisition='Read the explicitly selected local target only.')

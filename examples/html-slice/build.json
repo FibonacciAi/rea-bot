@@ -1,0 +1,21 @@
+{
+  "evidence": [
+    {
+      "id": "page",
+      "state": "observed-static",
+      "locator": "index.html",
+      "summary": "Static HTML document. Visible text is the title plus the body paragraph. Script and style contents are not part of the visible text, and scripts are not executed."
+    }
+  ],
+  "features": [
+    {
+      "id": "static-text",
+      "name": "Static visible text",
+      "interface": "HTML document",
+      "behavior": "Normalized visible text matches the acquired page. Markup, style and script bodies may differ.",
+      "test": "one html-protocol case",
+      "state": "observed-static",
+      "evidence_ids": ["page"]
+    }
+  ]
+}

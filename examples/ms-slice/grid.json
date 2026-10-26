@@ -1,0 +1,8 @@
+{
+  "feature_id": "parse-duration",
+  "id_prefix": "parse",
+  "base": {"args": [""]},
+  "grid": {
+    "args.0": ["1s", "5s", "1m", "10h", "1d", "2 days", "2w", "1y", "1.5h", "500ms", "100", "-1s", ".5s", "2 hours", "1 year", "nope", "1x"]
+  }
+}

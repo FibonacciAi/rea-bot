@@ -1,0 +1,39 @@
+{
+  "evidence": [
+    {
+      "id": "semver-bin",
+      "state": "source-derived",
+      "locator": "package/bin/semver.js",
+      "summary": "CLI prints a valid X.Y.Z or an incremented X.Y.Z. Invalid input exits nonzero with empty stdout. This slice covers one version and major, minor or patch."
+    }
+  ],
+  "features": [
+    {
+      "id": "echo-version",
+      "name": "Echo one valid version",
+      "interface": "semver <X.Y.Z>",
+      "behavior": "Prints the version and exits 0. Leading zeros are invalid.",
+      "test": "cli cases echo-plain and echo-zero",
+      "state": "source-derived",
+      "evidence_ids": ["semver-bin"]
+    },
+    {
+      "id": "increment",
+      "name": "Increment major, minor or patch",
+      "interface": "semver <X.Y.Z> -i <major|minor|patch>",
+      "behavior": "Prints the incremented version and exits 0. --inc is the long flag.",
+      "test": "cli cases inc-major, inc-minor, inc-patch",
+      "state": "source-derived",
+      "evidence_ids": ["semver-bin"]
+    },
+    {
+      "id": "reject-invalid",
+      "name": "Reject invalid versions",
+      "interface": "semver <text>",
+      "behavior": "Exits nonzero and prints nothing for a non-version, a partial version, or a leading zero.",
+      "test": "cli cases bad-word, bad-short, bad-leading-zero",
+      "state": "source-derived",
+      "evidence_ids": ["semver-bin"]
+    }
+  ]
+}

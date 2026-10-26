@@ -1,8 +1,8 @@
 {
   "name": "rea-bot",
   "displayName": "Lostwax",
-  "version": "0.3.0",
-  "description": "Lostwax: study an app, repo, package or site, rebuild the feature you want, and prove the rebuild matches the original with logged, side-by-side runs. Powered by the REA engine.",
+  "version": "0.12.0",
+  "description": "Lostwax: study an app, repo, package or site, rebuild the feature you want, and prove the rebuild matches the original with logged, side-by-side runs. Acquires npm, git and static pages. Powered by the REA engine.",
   "author": {
     "name": "FibonacciAi"
   },

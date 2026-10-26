@@ -1,0 +1,10 @@
+[
+  {"id": "short-1s", "feature_id": "format-short", "input": {"args": [1000]}},
+  {"id": "short-2s-round", "feature_id": "format-short", "input": {"args": [1500]}},
+  {"id": "short-1m", "feature_id": "format-short", "input": {"args": [60000]}},
+  {"id": "short-2d", "feature_id": "format-short", "input": {"args": [172800000]}},
+  {"id": "short-0", "feature_id": "format-short", "input": {"args": [0]}},
+  {"id": "long-1day", "feature_id": "format-long", "input": {"args": [86400000], "kwargs": {"long": true}}},
+  {"id": "long-2days", "feature_id": "format-long", "input": {"args": [172800000], "kwargs": {"long": true}}},
+  {"id": "long-boundary", "feature_id": "format-long", "input": {"args": [90000000], "kwargs": {"long": true}}}
+]

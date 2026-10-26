@@ -27,7 +27,7 @@ class Mcp(TempHome):
                         self.call(3, 'rea_route', {'target': 'https://example.org', 'extra': 1}),
                         {'jsonrpc': '2.0', 'id': 4, 'method': 'nope'}, 'garbage'])
         self.assertEqual(out[0]['result']['serverInfo']['name'], 'rea-bot')
-        self.assertEqual(len(out[1]['result']['tools']), 12)
+        self.assertEqual(len(out[1]['result']['tools']), 20)
         self.assertTrue(out[2]['result']['isError'])
         self.assertEqual(out[3]['error']['code'], -32601)
         self.assertEqual(out[4]['error']['code'], -32600)
