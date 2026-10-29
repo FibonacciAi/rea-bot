@@ -36,7 +36,8 @@ TOOLS = [
     tool('rea_diff', 'Run reconstruction (and, with a digest-pinned approval, the original) on identical cases. protocol is json (default), cli or html. compare is exact, subset or text. Logs every output and records mismatch evidence.',
          {'run_id': S, 'cases_file': S, 'reconstruction': {'type': 'array', 'items': S}, 'original': {'type': 'array', 'items': S},
           'original_pin': S, 'approve_original': S, 'timeout': {'type': 'number'}, 'only': {'type': 'array', 'items': S},
-          'failed_only': {'type': 'boolean'}, 'resume': {'type': 'boolean'}, 'protocol': S, 'compare': S},
+          'failed_only': {'type': 'boolean'}, 'resume': {'type': 'boolean'}, 'protocol': S, 'compare': S,
+          'reconstruction_pin': {'type': 'string', 'description': 'Complete reconstruction dependency file/tree. Required for case reuse; without it resume re-executes all cases.'}},
          ['run_id', 'cases_file', 'reconstruction'], False),
     tool('rea_parity', 'Account parity for the current spec: runner-attested rows from the latest diff plus optional caller-supplied rows. Writes PARITY.md and SCORECARD.md.', {'run_id': S, 'results': ARR}, ['run_id'], False),
     tool('rea_recheck', 'For routines: verify spec/log digests and optionally re-run the last executed cases with the same pinned approval; flags regressions and changed original command files.', {'run_id': S, 'rerun': {'type': 'boolean'}}, ['run_id'], False),
@@ -69,7 +70,7 @@ def call(name, a):
     if name == 'rea_prepare': return api.prepare(a['run_id'], a['build'], a.get('engine_waiver'))
     if name == 'rea_diff': return api.diff(a['run_id'], a['cases_file'], a['reconstruction'], a.get('original'), a.get('original_pin'),
                                            a.get('approve_original'), a.get('timeout', 10), None, a.get('only'), a.get('failed_only', False),
-                                           a.get('resume', False), a.get('protocol', 'json'), a.get('compare'))
+                                           a.get('resume', False), a.get('protocol', 'json'), a.get('compare'), a.get('reconstruction_pin'))
     if name == 'rea_parity': return api.parity(a['run_id'], a.get('results'))
     if name == 'rea_recheck': return api.recheck(a['run_id'], a.get('rerun', False))
     if name == 'rea_report': return api.report_run(a['run_id'])

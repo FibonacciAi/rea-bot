@@ -1,12 +1,31 @@
 # Changelog
 
 ## 0.12.0
-The owned decompiler beats stock Ghidra 12.1.4 on the `/bin/ls` and ripgrep readability targets below. Ghidra remains an optional backend. Global parity stays unknown.
+The owned decompiler beats stock Ghidra 12.1.4 on the `/bin/ls` and ripgrep readability targets below. Those readability numbers measure the structural sketch; the bounded typed subset described under the validation bullets is the only output labeled `modeled-static`. Ghidra remains an optional backend. Global parity stays unknown.
 - A conditional branch with no flags of its own is copied once per predecessor when those compares disagree, and each edge keeps its condition. A copied region whose condition is missing stays a `goto`. A constant `0` or `1` condition keeps the live arm. `ccmp`, `ccmn`, `fcmp`, and `bics` record flags.
 - Each PLT stub is its own function. A named GOT slot is `name();`. An approximate function is split after `ret` or `udf` padding when an earlier branch in that range does not target the cut and the range has at most eight cuts. eh_frame ranges stay whole. A NUL-terminated string may contain a newline or a tab; that pass runs only while the string cap has room.
 - On `/bin/ls`, native text is 509 functions, 728 gotos (1.43 each; stock 1.77), 37 in `main` (stock 43), 1,070 unnamed tokens (stock 5,694), 1 address literal (stock 2,374), 8,144 lines, about 2.4 seconds. Strings are 536 against the earlier 492. `if (1)` does not occur. `sub_174a0` still has 134 gotos, `sub_127a0` 104, `sub_14790` 80, and `sub_cb80` 51.
 - On ripgrep 14.1.1 ELF arm64, 7,463 functions have text (stock lists 7,386; a recount this run is 7,388), 1.06 gotos each (stock 2.46), no `if (1)`, 82 address literals, in about 94 seconds (stock about 300). Unnamed tokens stay under stock.
 - Readability tables and the scorecard are in `docs/DECOMPILER.md`.
+
+Equipped validation, merged into this release:
+- Equipped owned validation found and repaired cached stack spills surviving a frame push, implicit PUSH writes into caller state after positive stack excursions, and hidden x86 operand/address-size prefixes on implicit stack/control effects. Unsupported cases now refuse translation.
+- Restore authenticated ZIP executable modes during Ghidra extraction, strip privilege bits and verify executable-mode identity. The former extraction produced non-executable launchers/native decompiler and failed exit 126.
+- Add actual LIEF/Capstone machine/C differentials, real Ghidra Java post-script/owned-target checks and freestanding ARM64 QEMU differentials. Emulation is distinct from physical ARM64 validation.
+- Reject metadata control characters before Ghidra config serialization; defend the post-script against duplicate control directives and redirected output. Refuse unsupported mixed ABI classes or missing formal GP bindings during DWARF naming.
+- Repair fresh owned differential failures with typed joins, width truncation/zero-extension, signed-overflow flags, operand-width BT indices and explicit unsupported effects. Validate parameter names and substitute DWARF names simultaneously to avoid changing values through aliasing.
+- Withdraw the Preact/Wakaru ranking: source-map content extraction was compared with structural bundle unpacking. Prepare separate equal-input structural, heuristic and map-content cases; paired results remain unmeasured until an equipped run.
+- Carry forward the reviewed async, freshness, evidence and process-capture repairs below without removing the expanded 0.11.0 discovery/sketch capabilities or any of the 20 MCP tools.
+- The public decompiler emits only the bounded typed leaf/register-CFG subset or an explicit refusal. Per-function `owned-typed` output is `modeled-static`; preserved broader calls/loops/switches are `structural-sketch`, `unsupported`, with a fallback reason. Typed success never means equivalence. Historical readability tests exercise the explicit sketch API separately from owned machine/C differential tests.
+- Core tests discover without Capstone/LIEF. Similarity includes numeric literals and preserves identifier case; historical token scores below apply to the older algorithm.
+- Analysis defaults to native on every interface. Ghidra requires an explicit backend choice, complete tree identity against its locally retained pinned ZIP, the same selected Java for probe/launch, an isolated environment and bounded process-group capture. Real Ghidra tests require explicit opt-in.
+- Independent review repaired shadow-log ledger injection, bytecode/empty-directory/mode/environment freshness gaps, lossy CLI byte comparisons and differential failure selection with optional expected metadata. Tree pins now use `sha256-tree-v2`; earlier records require fresh approval/evidence.
+- Generated JavaScript harnesses await promises and thenables; Python harnesses support async functions and returned awaitables. Rejections fail instead of becoming false matches.
+- Incremental reuse binds command bytes, a declared `--reconstruction-pin` dependency tree and complete case definitions. Changed implementations reset cumulative passes. Without a dependency pin, resume re-executes all cases. Failure selection reads every failure, including those beyond the 200-row preview.
+- Differential summaries and case inputs are digest-bound to the run, with matches and feature results recomputed from logs. Edited summaries, stale parity accounting and partial certificates are refused. Older evidence needs a full rerun.
+- Streaming stdout/stderr limits stop excessive output before unbounded capture; timeout and overflow stop the process group. Recheck detects per-case regressions even when aggregate matches stay equal.
+- Ghidra retains its all-internal selector with bounded process/report capture. Attempts, successful bodies, failures and truncated C are reported separately; a requested full run is not a completed result. Legacy structural dead-store elimination now retains unknown memory/effects.
+- Version is 0.12.0 and all 20 MCP tools remain available. The entries below retain upstream release history and author-reported measurements of the previous structural implementation, not validation of the typed integration.
 
 ## 0.11.0
 The owned decompiler follows more joins, prints real flag conditions, and drops dead stores. Ghidra remains an optional backend. Global parity stays unknown.

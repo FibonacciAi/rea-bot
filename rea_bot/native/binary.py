@@ -4,8 +4,8 @@ Disassembly and control flow are native (Capstone) for x86-64, x86-32, arm64 and
 Function bounds come from .eh_frame, the PE exception directory, Mach-O function starts,
 symbols, and direct call targets. Import stubs are named for ELF, PE and Mach-O.
 DWARF parameter names are written into the lifted body. PDB records are read when present.
-On x86-64 and arm64 the owned decompiler structures calls, if/while/switch and named callees.
-Leaf functions of at most 80 instructions still use the milestone 1 structurer.
+On x86-64 and arm64 a conservative typed backend models a bounded integer subset.
+Broader calls/if/while/switch output remains an explicitly unsupported structural sketch.
 Nothing is executed.
 """
 import os
@@ -13,7 +13,7 @@ import struct
 import time
 
 from . import dwarf, ehframe, lift, pdb
-from .decompile import decompile_function
+from .decompile import decompile_function, decompile_sketch
 from .prototypes import convention_for, usage_signature
 from .runtime import activate
 
@@ -856,6 +856,10 @@ def _disassemble(md, arch, func, sections, plt, strings, names, budget, lift_lef
     pseudo = []
     if insns and (lift_left is None or lift_left[0] > 0):
         structured = None
+        sketch = None
+        fallback_reasons = []
+        func['pseudocode_backend'] = 'structural-lift'
+        func['semantic_status'] = 'unsupported'
         if arch in {"x86-64", "arm64"}:
             try:
                 label_at = dict(plt)
@@ -874,10 +878,25 @@ def _disassemble(md, arch, func, sections, plt, strings, names, budget, lift_lef
                         string_at.setdefault(addr + offset, text[offset:])
                 structured = decompile_function(
                     md, insns, arch, names=label_at, strings=string_at, convention=convention,
-                    memory=lambda addr, n: _bytes_at(sections, addr, n))
-            except Exception:
+                    memory=lambda addr, n: _bytes_at(sections, addr, n), fallback_reasons=fallback_reasons)
+                if structured is None:
+                    sketch = decompile_sketch(
+                        md, insns, arch, names=label_at, strings=string_at, convention=convention,
+                        memory=lambda addr, n: _bytes_at(sections, addr, n))
+            except Exception as err:
                 structured = None
-        pseudo = structured if structured else lift.lift(md, insns, arch)
+                fallback_reasons.append('Decompiler decoding failed: ' + type(err).__name__)
+        else:
+            fallback_reasons.append('Typed modeling is unsupported for architecture ' + str(arch))
+        if structured:
+            func['pseudocode_backend'] = 'owned-typed'
+            func['semantic_status'] = 'modeled-static'
+        elif sketch:
+            func['pseudocode_backend'] = 'structural-sketch'
+        if not structured:
+            func['fallback_reason'] = (fallback_reasons or ['Outside the typed modeled subset.'])[0]
+            func['leaf_fallback_reason'] = func['fallback_reason']
+        pseudo = structured if structured else sketch if sketch else lift.lift(md, insns, arch)
         if pseudo and lift_left is not None:
             lift_left[0] -= 1
     func.update({"instructions": len(insns), "blocks": flow["blocks"], "cfg_edges": flow["edges"],
@@ -1086,7 +1105,7 @@ def analyze_binary(path):
 
 
 def _rewrite_dwarf_body(func):
-    """Replace lifter argN tokens with DWARF parameter names. arg10 is replaced before arg1."""
+    """Apply validated DWARF names simultaneously; reject unsafe substitutions."""
     import re
     sig = func.get("signature") or {}
     if sig.get("source") != "dwarf":
@@ -1094,16 +1113,28 @@ def _rewrite_dwarf_body(func):
     lines = func.get("pseudocode") or []
     if not lines:
         return
-    pairs = []
-    for index, arg in enumerate(sig.get("args") or []):
-        token = str(arg).split()[-1]
-        if token == "arg%d" % index or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token):
-            continue
-        pairs.append((index, token))
-    text = "\n".join(lines)
-    for index, token in sorted(pairs, key=lambda item: -item[0]):
-        text = re.sub(r"\barg%d\b" % index, token, text)
-    func["pseudocode"] = text.split("\n")
+    from .decompile import _rename, _gp_type, Unsupported
+    try:
+        if sig.get('returns') not in {None, '', 'unknown'}:
+            _gp_type(sig['returns'], allow_void=True)
+        if len(sig.get('args') or []) > 6:
+            # This helper lacks the architecture/register-location map; a
+            # bounded six-scalar window is conservative for both ABIs.
+            raise Unsupported('excess formal arguments need an ABI location map')
+        # Validate once and replace all original tokens in one pass. Replacing
+        # arg1 with arg0 must not rewrite that new token a second time.
+        func['pseudocode'] = _rename(lines, sig.get('args') or [])
+        func['parameter_rename_status'] = 'applied'
+    except Unsupported as err:
+        reason = 'DWARF parameter names unsupported: ' + str(err)
+        func['parameter_rename_status'] = 'unsupported'
+        func['parameter_rename_reason'] = str(err)
+        func['semantic_status'] = 'unsupported'
+        func['pseudocode_backend'] = 'structural-sketch'
+        func['fallback_reason'] = reason
+        # Keep original argN tokens rather than invent a named translation.
+        func['pseudocode'] = ['/* ' + reason + '; original argN names retained. */'] + lines
+
 
 
 def _apply_dwarf(func, record):
@@ -1499,6 +1530,14 @@ def _one(binary, path=None):
                 "string_xrefs": func.get("string_xrefs", []), "constant_xrefs": func.get("constant_xrefs", [])}
         if func.get("pseudocode"):
             item["pseudocode"] = func["pseudocode"]
+            item['pseudocode_backend'] = func.get('pseudocode_backend', 'structural-lift')
+            item['semantic_status'] = func.get('semantic_status', 'unsupported')
+            for field in ('parameter_rename_status', 'parameter_rename_reason'):
+                if field in func:
+                    item[field] = func[field]
+            if func.get('fallback_reason'):
+                item['fallback_reason'] = func['fallback_reason']
+                item['leaf_fallback_reason'] = func['fallback_reason']
         if func.get("size_approximate"):
             item["size_approximate"] = True
         public.append(item)
@@ -1520,6 +1559,8 @@ def _one(binary, path=None):
             "strings": {"count": len(strings), "samples": _string_samples(strings)},
             "xrefs": {"strings": string_xrefs, "constants": constant_xrefs},
             "decompiler": {"lifted": len(lifted), "with_control_flow": len(control),
+                           "modeled_static": sum(item.get('semantic_status') == 'modeled-static' for item in lifted),
+                           "unsupported_sketches": sum(item.get('semantic_status') == 'unsupported' for item in lifted),
                            "sample_name": sample["name"] if sample else "",
                            "sample": sample["pseudocode"] if sample else [],
                            "seconds": round(time.perf_counter() - decompile_started, 4)},
@@ -1527,7 +1568,7 @@ def _one(binary, path=None):
             "instructions": budget[0],
             "functions_detail": public,
             "limitations": limitations + [
-                "Pseudocode is the owned decompiler on x86-64 and arm64: calls, if/while/switch, and names from DWARF or import prototypes. Other architectures stay on the structural lift.",
+                "Pseudocode labels distinguish owned-typed modeled-static output from unsupported structural sketches/lifts. Static modeling is not semantic equivalence or runtime proof. Calls/switch sketches and DWARF/prototype names remain available.",
                 "Register signatures are inferred unless DWARF names them. x86-32 cdecl arguments stay on the stack.",
                 "The file was not executed.",
             ]}

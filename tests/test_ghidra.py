@@ -119,7 +119,9 @@ class GhidraContract(unittest.TestCase):
         self.assertFalse((Path(info["home"]) / "cache").exists())
 
 
-@unittest.skipUnless(CANDIDATE.is_dir() or os.environ.get("GHIDRA_INSTALL_DIR"), "pinned Ghidra tree is absent")
+@unittest.skipUnless(os.environ.get("REA_BOT_TEST_GHIDRA") == "1" and
+                     (CANDIDATE.is_dir() or os.environ.get("GHIDRA_INSTALL_DIR")),
+                     "real Ghidra requires REA_BOT_TEST_GHIDRA=1 and a verified pinned tree")
 class GhidraDecompile(unittest.TestCase):
     def setUp(self):
         self.saved = {key: os.environ.get(key) for key in _ENV}
@@ -127,6 +129,10 @@ class GhidraDecompile(unittest.TestCase):
             os.environ["GHIDRA_INSTALL_DIR"] = str(CANDIDATE)
         if not ghidra_backend.status().get("ready"):
             self.skipTest("pinned Ghidra 12.1.4 or Java 21 is not verified")
+        from rea_bot.native.runtime import imports
+        available = imports()
+        if not (available.get("capstone") and available.get("lief")):
+            self.skipTest("optional Capstone/LIEF decoder wheels are unavailable")
 
     def tearDown(self):
         for key, value in self.saved.items():

@@ -7,7 +7,7 @@ reduce. Nothing is executed.
 import re
 import struct
 
-from .decompile import _ALIAS, _copy_state, _get, _rename, _seed, _set, _slot
+from .legacy_decompile import _ALIAS, _copy_state, _get, _rename, _seed, _set, _slot
 from .prototypes import CLOBBER, REGS, lookup, normalize
 from .struct import structure_function
 
@@ -181,8 +181,14 @@ def _blocks(rows, extra=()):
                 leaders.add(target)
             if nxt in by_addr:
                 leaders.add(nxt)
-        elif kind == "goto" and target in by_addr:
-            leaders.add(target)
+        elif kind == "goto":
+            if target in by_addr:
+                leaders.add(target)
+            # An unconditional jump ends the block. Bytes after it are padding
+            # or another block. Folding them in made the jump's kind the
+            # padding's kind, so a tail jump became `return 0` or `goto 0x…`.
+            if nxt in by_addr:
+                leaders.add(nxt)
         elif kind in {"ret", "ijmp"} and nxt in by_addr:
             leaders.add(nxt)
     ordered = sorted(leaders)
@@ -1091,7 +1097,7 @@ def _propagate_flags(blocks, by):
 
 
 def drop_dead_stores(lines):
-    """Remove assignments whose name is never read. A call on the right stays."""
+    """Drop unused scalar copies/literals only; retain unknown memory/effects."""
     current = list(lines or [])
     for _ in range(8):
         updated = _drop_dead_once(current)
@@ -1120,7 +1126,11 @@ def _drop_dead_once(lines):
         if _is_call_expr(expr):
             kept.append("%s%s;" % (match.group(1), expr))
             continue
-        if "(" in expr:
+        # This structural sketch has no effect/volatile analysis. A dereference,
+        # indexing, increment, arithmetic helper, or any unfamiliar expression
+        # may fault or have side effects. Only discard a simple scalar copy or
+        # numeric literal, and preserve call evaluation even when unused.
+        if not re.fullmatch(r"(?:[A-Za-z_][A-Za-z0-9_]*|[-+]?(?:0[xX][0-9A-Fa-f]+|[0-9]+))", expr):
             kept.append(line)
             continue
     return kept

@@ -1,3 +1,4 @@
+import shutil
 """Offline native engine: disassembly, wasm, archives, source maps. No network."""
 import json
 import struct
@@ -124,6 +125,8 @@ class Parsers(unittest.TestCase):
     def test_nsis_and_msi_when_tools_exist(self):
         if not imports().get("olefile"):
             self.skipTest("olefile wheel not installed")
+        if not all(shutil.which(tool) for tool in ("makensis", "msibuild", "gcab")):
+            self.skipTest("makensis, msibuild or gcab is not installed")
         nsis = subprocess.run(["makensis", "-VERSION"], capture_output=True, text=True)
         msibuild = subprocess.run(["msibuild"], capture_output=True, text=True)
         gcab = subprocess.run(["gcab", "--version"], capture_output=True, text=True)
@@ -176,15 +179,19 @@ class Parsers(unittest.TestCase):
 
 @unittest.skipUnless(_wheels(), "capstone and lief wheels not installed")
 class Binaries(TempHome):
+    @unittest.skipUnless(sys.platform.startswith("linux"), "needs the Linux x86-64 ELF /bin/ls")
     def test_bin_ls_disassembly(self):
         from rea_bot.native.binary import analyze_binary
         report = analyze_binary("/bin/ls")
         self.assertEqual(report["arch"], "x86-64")
         self.assertGreaterEqual(report["functions"]["count"], 400)
-        plt = [func for func in report["functions_detail"] if func.get("origin") == "plt"]
-        self.assertGreaterEqual(len(plt), 100)
-        clean = [func for func in plt if func.get("name")
-                 and "goto " not in "\n".join(func.get("pseudocode") or [])]
+        # A classic lazy PLT is labeled "import" on some builds and "plt" on
+        # others. Either label is a stub. The body still has to be a named
+        # call, not a goto.
+        stubs = [func for func in report["functions_detail"]
+                 if func.get("origin") in {"plt", "import"} and func.get("name")]
+        self.assertGreaterEqual(len(stubs), 100)
+        clean = [func for func in stubs if "goto " not in "\n".join(func.get("pseudocode") or [])]
         self.assertGreaterEqual(len(clean), 100)
         self.assertGreater(report["functions"]["disassembled"], 100)
         self.assertTrue(report["entry_assembly"])
@@ -232,6 +239,7 @@ class Binaries(TempHome):
         self.assertIn("hi\nthere", texts)
         self.assertIn("plain", texts)
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "needs a gcc that emits Linux ELF")
     def test_compiled_signature_and_call(self):
         from rea_bot.native.binary import analyze_binary
         compiler = "gcc"
@@ -256,7 +264,7 @@ class Binaries(TempHome):
             self.assertIn("return", text)
             self.assertIn("+", text)
 
-    def test_x86_32_and_arm_cfg(self):
+    def test_x86_32_cfg(self):
         from rea_bot.native.binary import analyze_binary
         source = "int add(int a, int b){return a+b;} int use(void){return add(2,3);} void _start(void){use();}\n"
         with tempfile.TemporaryDirectory() as tmp:
@@ -277,6 +285,14 @@ class Binaries(TempHome):
             self.assertIn("add", by_name)
             self.assertTrue(any(c.get("name") == "add" for c in by_name["use"]["callees"]))
             self.assertIn("+", "\n".join(by_name["add"].get("pseudocode") or []))
+    @unittest.skipUnless(shutil.which('clang') and shutil.which('arm-linux-gnueabi-ld'),
+                         'optional ARM32 compiler/linker are not installed')
+    def test_arm32_cfg(self):
+        from rea_bot.native.binary import analyze_binary
+        source = "int add(int a, int b){return a+b;} int use(void){return add(2,3);} void _start(void){use();}\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "ops.c"
+            src.write_text(source)
             arm_cc = subprocess.run(["clang", "-x", "c", "-target", "arm-linux-gnueabi", "-marm", "-c", "-O0", "-fno-pic",
                                      "-ffreestanding", "-fno-asynchronous-unwind-tables", "-o", str(Path(tmp) / "opsarm.o"), str(src)],
                                     capture_output=True, text=True)
@@ -293,6 +309,7 @@ class Binaries(TempHome):
             self.assertTrue(any(c.get("name") == "add" for c in by_name["use"]["callees"]))
             self.assertIn("return", "\n".join(by_name["add"].get("pseudocode") or []))
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "needs a gcc that emits Linux ELF with DWARF")
     def test_dwarf_parameter_names(self):
         if not imports().get("pyelftools"):
             self.skipTest("pyelftools wheel not installed")

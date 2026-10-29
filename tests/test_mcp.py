@@ -43,9 +43,12 @@ class Mcp(TempHome):
             self.call(4, 'rea_diff', {'run_id': 'mcp-demo', 'cases_file': str(EXAMPLE / 'cases.json'),
                                       'reconstruction': ['python3', str(EXAMPLE / 'reconstruction' / 'adapter.py')],
                                       'original': ['node', str(EXAMPLE / 'original' / 'adapter.mjs')],
-                                      'original_pin': str(EXAMPLE / 'original'), 'approve_original': pin}),
+                                      'original_pin': str(EXAMPLE / 'original'), 'approve_original': pin,
+                                      'reconstruction_pin': str(EXAMPLE / 'reconstruction')}),
             self.call(5, 'rea_parity', {'run_id': 'mcp-demo'})])
         for m in out:
             self.assertFalse(m['result'].get('isError'), m)
         self.assertEqual(out[3]['result']['structuredContent']['matches'], 14)
+        self.assertEqual(out[3]['result']['structuredContent']['reconstruction_pin_sha256'],
+                         runner.sha256_path(EXAMPLE / 'reconstruction'))
         self.assertEqual(out[4]['result']['structuredContent']['runner_attested_passes'], 4)

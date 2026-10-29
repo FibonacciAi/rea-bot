@@ -1,4 +1,4 @@
-"""Head-to-head: Lostwax native engine vs the optional REA engine on the same files.
+"""Historical native/backend observations, with JavaScript comparison kept unmeasured.
 
 Prints one JSON object per target and writes docs/benchmark-last.json.
 docs/BENCHMARK.md is the written-up record of a run; this script does not overwrite it.
@@ -22,10 +22,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from rea_bot import api, engine  # noqa: E402
-from rea_bot.native import archive, jsbundle  # noqa: E402
+from rea_bot.native import archive  # noqa: E402
 from rea_bot.native.binary import analyze_binary  # noqa: E402
 from rea_bot.native.dotnet import analyze_dotnet  # noqa: E402
 from rea_bot.native.wasm import parse as parse_wasm  # noqa: E402
+from scripts.benchmark_javascript import prepare_cases as prepare_javascript_cases  # noqa: E402
 
 TARGETS = Path("/tmp/lw-targets")
 CRC_JS = Path("/tmp/crc32.js")
@@ -326,24 +327,21 @@ def main():
 
         preact = TARGETS / "preact.module.js"
         if preact.is_file() and (TARGETS / "preact.module.js.map").is_file():
-            started = time.perf_counter()
-            report = jsbundle.analyze_javascript(preact, tmp / "preact")
-            seconds = round(time.perf_counter() - started, 2)
-            js_dir = tmp / "preact-src"
-            js_dir.mkdir()
-            shutil.copy(preact, js_dir / preact.name)
-            shutil.copy(TARGETS / "preact.module.js.map", js_dir / "preact.module.js.map")
-            run = api.new(str(js_dir), "bench-preact")["run"]
-            rea = _rea(run, [
-                {"tool": "analyze_javascript_application", "arguments": {"input_path": str(js_dir), "detail": "summary"}},
-                {"tool": "recover_javascript_sources", "arguments": {
-                    "path": str(js_dir / preact.name), "output_directory": str(tmp / "wakaru-out"),
-                    "extraction_mode": "structural", "rewrite_level": "minimal"}},
-            ])
-            _add(rows, {"target": "preact 10.24.3 module + source map",
-                         "lostwax": {"source_map_modules_with_content": (report.get("source_map") or {}).get("sources_with_content"),
-                                     "scripts_executed": report["scripts_executed"]},
-                         "lostwax_seconds": seconds, "rea": rea, "proof": "modules recovered, not executed"})
+            plan = prepare_javascript_cases(preact, TARGETS / 'preact.module.js.map', tmp / 'preact-equal-input')
+            _add(rows, {'target': 'preact JavaScript recovery: equal-input rerun pending',
+                        'comparison_status': 'unmeasured', 'ranking': None,
+                        'lostwax': {'status': 'unmeasured'},
+                        'rea': {'text': 'unmeasured; strict unpack, heuristic unpack and source-map extraction require separate matched-input runs',
+                                'calls': []},
+                        'protocol_cases': [{'id': case['id'], 'inputs': case['inputs'],
+                                            'comparison_status': case['comparison_status']} for case in plan['cases']],
+                        'proof': 'Prepared protocol only; no comparable recovery result or runtime equivalence measured.'})
+        else:
+            _add(rows, {'target': 'preact JavaScript recovery: equal-input rerun pending',
+                        'comparison_status': 'unmeasured', 'ranking': None,
+                        'lostwax': {'status': 'unmeasured'},
+                        'rea': {'text': 'unmeasured; required local Preact bundle/map are absent', 'calls': []},
+                        'proof': 'No matched-input recovery run was performed.'})
 
         deb = TARGETS / "hello_2.10-3_amd64.deb"
         if deb.is_file():
