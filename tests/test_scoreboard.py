@@ -18,6 +18,13 @@ class Totals(unittest.TestCase):
         self.assertEqual(summary["without_stubs"]["gotos"], 1)
         self.assertEqual(summary["without_stubs"]["gotos_per_function"], 1.0)
 
+    def test_call_and_bare_mem_are_not_unnamed(self):
+        summary = summarize([{
+            "address": "0x10", "name": "f", "origin": "symbol",
+            "pseudocode": ["call_1 = sub_10();", "mem = call_1;", "arg0 = mem_1;"],
+        }])
+        self.assertEqual(summary["with_stubs"]["unnamed"], 3)
+
     def test_over_20_is_counted(self):
         lines = ["goto loc_%x;" % index for index in range(21)]
         summary = summarize([

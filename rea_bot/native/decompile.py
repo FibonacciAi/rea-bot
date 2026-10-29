@@ -467,12 +467,22 @@ def _rename(lines, parameters):
     return text.split("\n")
 
 
+# The documented unnamed set. `call_N` is a resolved call result and a bare
+# `mem` is an untyped access; neither is an unnamed identifier. Counting them
+# inflated /bin/ls by several thousand tokens without adding information.
+_UNNAMED = re.compile(
+    r"\b(?:param_\d+|arg\d+\??|FUN_[0-9A-Fa-f]+|sub_[0-9A-Fa-f]+|local_[0-9A-Fa-f]+|"
+    r"mem_[0-9A-Fa-f]+|data_[0-9A-Fa-f]+|undefined\d*|DAT_[0-9A-Fa-f]+)\b")
+_ADDR = re.compile(r"\b0x[0-9A-Fa-f]+\b")
+
+
 def readability(text):
-    """Descriptive counts, never a correctness metric; include unresolved tokens."""
-    return {"lines": len([line for line in (text or "").splitlines() if line.strip()]),
-            "gotos": len(re.findall(r"\bgoto\b", text or "")),
-            "unnamed": len(re.findall(r"\b(?:param_\d+|arg\d+|call_\d+|mem|mem_\w+|sub_\w+|FUN_\w+|data_\w+|DAT_\w+|undefined\d*|local_\w+)\b", text or "")),
-            "addresses": len(re.findall(r"\b0x[0-9a-fA-F]+\b", text or ""))}
+    """Descriptive counts, never a correctness metric."""
+    body = text or ""
+    return {"lines": len([line for line in body.splitlines() if line.strip()]),
+            "gotos": len(re.findall(r"\bgoto\b", body)),
+            "unnamed": len(_UNNAMED.findall(body)),
+            "addresses": len(_ADDR.findall(body))}
 
 
 def decompile_function(md, insns, arch, parameters=None, names=None, strings=None,
